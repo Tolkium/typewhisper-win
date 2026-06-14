@@ -25,7 +25,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var deviceHint = new TextBlock
         {
-            Text = "Zariadenie pre inferenciu (OpenVINO / ORT).",
+            Text = "Zariadenie pre inferenciu cez OpenVINO.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -68,8 +68,8 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
         var hintText = new TextBlock
         {
             Text =
-                "NPU: encoder na NPU, decoder na CPU (stabilnejsie). Prvy load ~1 min (kompilacia bucketov). " +
-                "Po zmene zariadenia znovu nacitaj model. Live preview: polling kazde 3 s pocas nahravania.",
+                "NPU: encoder na NPU, decoder na CPU (stabilnejsie). GPU: encoder aj decoder cez OpenVINO GPU. " +
+                "Po zmene zariadenia znovu nacitaj model; status ukaze, ak je stale nahraty predchadzajuci device.",
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.75,
             FontSize = 12,

@@ -323,7 +323,7 @@ class ParakeetEngine:
 
             encoder = self._model.asr._encoder
             if hasattr(encoder, "warm_all_buckets"):
-                prog(0.55, "Pre-compiling NPU encoder buckets (~1 min first run)...")
+                prog(0.55, f"Pre-compiling {self.device} encoder buckets (~1 min first run)...")
                 encoder.warm_all_buckets()
                 prog(0.95, "Encoder buckets ready")
 
@@ -411,9 +411,9 @@ def cmd_check(model_dir: Path) -> None:
 
         devices = ov.Core().available_devices
 
-        if "NPU" not in devices:
+        if not any(device in devices for device in ("NPU", "GPU", "CPU")):
 
-            issues.append("NPU not visible to OpenVINO (driver?)")
+            issues.append("No supported OpenVINO device visible")
 
     except Exception as exc:
 
@@ -461,7 +461,7 @@ def cmd_setup(model_dir: Path) -> None:
 
 
 
-    respond({"progress": 0.35, "phase": "npu-assets"})
+    respond({"progress": 0.35, "phase": "openvino-assets"})
 
     try:
 
@@ -487,7 +487,7 @@ def cmd_setup(model_dir: Path) -> None:
 
     except Exception as exc:
 
-        respond({"error": f"NPU asset download failed: {exc}"})
+        respond({"error": f"OpenVINO asset download failed: {exc}"})
 
         sys.exit(1)
 

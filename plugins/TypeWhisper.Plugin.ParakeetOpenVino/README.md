@@ -1,7 +1,7 @@
 # Parakeet OpenVINO plugin (TypeWhisper)
 
 Lokalny engine **Parakeet TDT 0.6B v3** pre TypeWhisper s podporou **Intel NPU / GPU / CPU**
-a **nativnym live preview** (Silero VAD, `SupportsModelDownload = true`).
+a prepínaním zariadenia **NPU / GPU / CPU** cez plugin settings.
 
 ## Architektura
 
@@ -47,6 +47,17 @@ Reštartuj TypeWhisper → Settings → Engines → **Parakeet OpenVINO (NPU/GPU
 | **OV cache** | OpenVINO compile cache (default `C:\WhisperNPU\ovcache`) |
 
 Po zmene zariadenia znova stiahni/nacitaj model v TypeWhisper.
+
+## Zariadenie (v0.3.0+)
+
+Plugin settings obsahujú voľbu **NPU / GPU / CPU**:
+
+- **NPU**: encoder beží cez OpenVINO NPU, decoder cez CPU (stabilnejšie)
+- **GPU**: encoder aj decoder bežia cez OpenVINO GPU
+- **CPU**: fallback cez INT8 CPU
+
+Po zmene zariadenia treba model znovu načítať. Status pluginu ukáže, ak je stále
+nahratý predchádzajúci device.
 
 ## Live preview (v0.2.5+)
 

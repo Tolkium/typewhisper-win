@@ -12,7 +12,7 @@ namespace TypeWhisper.Plugin.ParakeetOpenVino;
 
 /// <summary>
 /// Parakeet TDT 0.6B v3 on Intel OpenVINO (NPU/GPU/CPU) via Python sidecar.
-/// SupportsModelDownload enables native Silero VAD live preview in TypeWhisper.
+/// SupportsModelDownload lets TypeWhisper manage setup/download state for the local model.
 /// </summary>
 public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionEnginePlugin
 {
@@ -38,6 +38,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private Task? _stderrDrainTask;
     private string? _selectedModelId;
     private string? _loadedModelId;
+    private string? _loadedDevice;
+    private string? _activeBackend;
     private string _targetDevice = "NPU";
     private string _pythonPath = DefaultPythonPath;
     private string _ovCache = DefaultOvCache;
@@ -47,7 +49,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public string PluginId => "com.whispernpu.parakeet-openvino";
     public string PluginName => "Parakeet OpenVINO (NPU/GPU)";
-    public string PluginVersion => "0.2.9";
+    public string PluginVersion => "0.3.0";
 
     public string ProviderId => "parakeet-openvino";
     public string ProviderDisplayName => "Parakeet OpenVINO (lokalne)";
@@ -62,15 +64,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     public TranscriptionAccelerationPreference AccelerationPreference => _accelerationPreference;
 
     public TranscriptionAccelerationStatus AccelerationStatus =>
-        new(
-            TranscriptionAccelerationBackend.Cpu,
-            TargetDevice == "NPU"
-                ? "OpenVINO NPU encoder + CPU decoder"
-                : TargetDevice == "GPU"
-                    ? "OpenVINO GPU"
-                    : "CPU INT8",
-            null,
-            false);
+        BuildAccelerationStatus();
 
     public IReadOnlyList<PluginModelInfo> TranscriptionModels { get; } =
     [
@@ -90,8 +84,13 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         get => _targetDevice;
         set
         {
-            _targetDevice = NormalizeDevice(value);
+            var normalized = NormalizeDevice(value);
+            if (string.Equals(_targetDevice, normalized, StringComparison.Ordinal))
+                return;
+
+            _targetDevice = normalized;
             TrySetSetting("targetDevice", _targetDevice);
+            Log(PluginLogLevel.Info, $"Target device changed to {_targetDevice}; reload model to apply");
         }
     }
 
@@ -137,7 +136,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         return Task.CompletedTask;
     }
 
-    public UserControl? CreateSettingsView() => null;
+    public UserControl? CreateSettingsView() => new ParakeetOpenVinoSettingsView(this);
 
     public void SetAccelerationPreference(TranscriptionAccelerationPreference preference) =>
         _accelerationPreference = preference;
@@ -240,9 +239,20 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             if (response.TryGetProperty("error", out var err))
                 throw new InvalidOperationException($"Load failed: {err.GetString()}");
 
+            var loadedDevice = response.TryGetProperty("device", out var dev)
+                ? NormalizeDevice(dev.GetString())
+                : TargetDevice;
+            var backend = response.TryGetProperty("backend", out var be)
+                ? be.GetString()
+                : null;
+
             _loadedModelId = modelId;
             _selectedModelId = modelId;
-            Log(PluginLogLevel.Info, $"Parakeet loaded on {TargetDevice} in {loadWatch.Elapsed.TotalSeconds:F1}s");
+            _loadedDevice = loadedDevice;
+            _activeBackend = backend;
+            Log(
+                PluginLogLevel.Info,
+                $"Parakeet loaded on {_loadedDevice} backend='{_activeBackend ?? "unknown"}' in {loadWatch.Elapsed.TotalSeconds:F1}s");
         }
         catch (Exception ex)
         {
@@ -324,6 +334,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         {
             StopSidecar();
             _loadedModelId = null;
+            _loadedDevice = null;
+            _activeBackend = null;
         }
         finally
         {
@@ -466,6 +478,31 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         _sidecarIn = null;
         _sidecarOut = null;
         _loadedModelId = null;
+        _loadedDevice = null;
+        _activeBackend = null;
+    }
+
+    private TranscriptionAccelerationStatus BuildAccelerationStatus()
+    {
+        var displayDevice = _loadedDevice ?? TargetDevice;
+        var displayText = displayDevice switch
+        {
+            "NPU" => "OpenVINO NPU encoder + CPU decoder",
+            "GPU" => "OpenVINO GPU encoder + decoder",
+            _ => "CPU INT8",
+        };
+
+        var needsReload = _loadedDevice is not null
+            && !string.Equals(_loadedDevice, TargetDevice, StringComparison.Ordinal);
+        var detail = needsReload
+            ? $"Loaded on {_loadedDevice}; selected {TargetDevice}. Reload the model to apply."
+            : _activeBackend;
+
+        return new TranscriptionAccelerationStatus(
+            TranscriptionAccelerationBackend.Cpu,
+            displayText,
+            detail,
+            needsReload);
     }
 
     private async Task<JsonElement> SendCommandAsync(object command, CancellationToken ct)
