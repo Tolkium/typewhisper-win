@@ -112,6 +112,20 @@ public class DictationShortSpeechPolicyTests
 
 public class DictationFinalTextPolicyTests
 {
+    [Theory]
+    [InlineData("<pad><pad><pad>", "")]
+    [InlineData("hello <pad> world", "hello world")]
+    [InlineData("<pad>ahoj", "ahoj")]
+    public void IsPadGarbage_DetectsDecoderGarbage(string input, string expectedSanitized)
+    {
+        if (string.IsNullOrEmpty(expectedSanitized))
+            Assert.True(DictationFinalTextPolicy.IsPadGarbage(input));
+        else
+            Assert.False(DictationFinalTextPolicy.IsPadGarbage(input));
+
+        Assert.Equal(expectedSanitized, DictationFinalTextPolicy.SelectRawText(input));
+    }
+
     [Fact]
     public void SelectRawText_FinalTextWinsOverStalePreview()
     {

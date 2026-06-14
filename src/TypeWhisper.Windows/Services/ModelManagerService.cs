@@ -272,10 +272,12 @@ public sealed class ModelManagerService : INotifyPropertyChanged, IDisposable
             SetStatus(modelId, ModelStatus.Ready);
             ActiveModelId = modelId;
             _activeModelAccelerationPreference = accelerationPreference;
+            ClearStaleLoadingStatuses(modelId);
         }
         catch (Exception ex)
         {
             SetStatus(modelId, ModelStatus.Failed(GetModelLoadFailureMessage(plugin, ex)));
+            ClearStaleLoadingStatuses(ActiveModelId);
             throw;
         }
     }
@@ -636,6 +638,23 @@ public sealed class ModelManagerService : INotifyPropertyChanged, IDisposable
 
         _modelStatuses[modelId] = status;
         OnPropertyChanged(nameof(GetStatus));
+    }
+
+    private void ClearStaleLoadingStatuses(string? exceptModelId)
+    {
+        foreach (var id in _modelStatuses.Keys.ToList())
+        {
+            if (exceptModelId is not null
+                && string.Equals(id, exceptModelId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (_modelStatuses[id].Type != ModelStatusType.Loading)
+                continue;
+
+            SetStatus(id, ModelStatus.NotDownloaded);
+        }
     }
 
     private bool TryGetPluginModelDownloadStatus(

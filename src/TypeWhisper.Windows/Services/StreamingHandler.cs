@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Threading.Channels;
 using TypeWhisper.Core.Interfaces;
 using TypeWhisper.PluginSDK;
+using TypeWhisper.Windows.ViewModels;
 
 namespace TypeWhisper.Windows.Services;
 
@@ -369,6 +370,9 @@ public sealed class StreamingHandler : IDisposable
                             continue;
 
                         var text = result.Text?.Trim() ?? "";
+
+                        if (DictationFinalTextPolicy.IsPadGarbage(text))
+                            continue;
 
                         if (!string.IsNullOrEmpty(text))
                         {

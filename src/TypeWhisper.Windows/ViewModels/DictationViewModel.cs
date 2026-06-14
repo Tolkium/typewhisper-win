@@ -114,6 +114,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable
     private Task? _consumerTask;
     private System.Timers.Timer? _durationTimer;
     private bool _isRecording;
+    private bool _isStartingRecording;
     private bool _isStoppingRecording;
     private int _pendingJobCount;
     private const int MaxTrackedApiDictationSessions = 50;
@@ -757,8 +758,8 @@ public partial class DictationViewModel : ObservableObject, IDisposable
 
     private async Task StartRecording()
     {
-        if (_isRecording || _isStoppingRecording) return;
-        _isRecording = true;
+        if (_isRecording || _isStoppingRecording || _isStartingRecording) return;
+        _isStartingRecording = true;
         FeedbackText = null;
         FeedbackIsError = false;
         ShowFeedback = false;
@@ -778,141 +779,153 @@ public partial class DictationViewModel : ObservableObject, IDisposable
             _activeWorkflow = _workflows.MatchWorkflow(_capturedProcessName, _capturedUrl)?.Workflow;
         }
 
-        var desiredModelId = EffectiveModelId ?? _settings.Current.SelectedModelId;
-        if (string.IsNullOrWhiteSpace(desiredModelId))
-        {
-            StatusText = Loc.Instance["Status.NoModelLoaded"];
-            _isRecording = false;
-            return;
-        }
-
         try
         {
-            if (!await _modelManager.EnsureModelLoadedAsync(desiredModelId))
+            var desiredModelId = EffectiveModelId ?? _settings.Current.SelectedModelId;
+            if (string.IsNullOrWhiteSpace(desiredModelId))
             {
                 StatusText = Loc.Instance["Status.NoModelLoaded"];
-                _isRecording = false;
                 return;
             }
+
+            StatusText = Loc.Instance["Models.LoadingModel"];
+
+            try
+            {
+                if (!await _modelManager.EnsureModelLoadedAsync(desiredModelId))
+                {
+                    StatusText = Loc.Instance["Status.NoModelLoaded"];
+                    return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (InvalidOperationException ex)
+            {
+                ApplyModelLoadFailureFeedback(ex);
+                return;
+            }
+            catch (IOException ex)
+            {
+                ApplyModelLoadFailureFeedback(ex);
+                return;
+            }
+            catch (ArgumentException ex)
+            {
+                ApplyModelLoadFailureFeedback(ex);
+                return;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                ApplyModelLoadFailureFeedback(ex);
+                return;
+            }
+            catch (TimeoutException ex)
+            {
+                ApplyModelLoadFailureFeedback(ex);
+                return;
+            }
+
+            if (!_modelManager.Engine.IsModelLoaded)
+            {
+                ApplyTransientIdleFeedback(Loc.Instance["Status.NoModelLoaded"], feedbackIsError: true);
+                return;
+            }
+
+            if (!_audio.HasDevice)
+            {
+                ApplyTransientIdleFeedback(Loc.Instance["Status.NoMicrophone"], feedbackIsError: true);
+                return;
+            }
+
+            _isRecording = true;
+
+            ActiveProcessName = _capturedProcessName;
+            ActiveWorkflowName = _activeWorkflow?.Name;
+
+            _audio.WhisperModeEnabled = EffectiveWhisperMode;
+
+            // Live transcription: streaming handler polls growing buffer periodically
+            _partialSegments.Clear();
+            PartialText = "";
+            _vad?.Dispose();
+            _vad = null;
+            _streamingHandler.Stop();
+
+            var isPluginModel = _modelManager.ActiveModelId is not null
+                && ModelManagerService.IsPluginModel(_modelManager.ActiveModelId);
+
+            var liveTranscriptionMode = LiveTranscriptionStartupPolicy.Select(
+                _settings.Current,
+                isPluginModel,
+                _modelManager.ActiveTranscriptionPlugin);
+
+            if (liveTranscriptionMode is LiveTranscriptionStartupMode.PluginStreaming
+                or LiveTranscriptionStartupMode.PluginPollingFallback)
+            {
+                _streamingHandler.Start(EffectiveLanguage, EffectiveTask, () => _isRecording);
+            }
+            else if (liveTranscriptionMode == LiveTranscriptionStartupMode.LegacyVad)
+            {
+                // VAD fallback for non-plugin models
+                _vad = CreateVoiceActivityDetector();
+                _audio.SamplesAvailable += OnSamplesAvailable;
+            }
+
+            _audio.StartRecording();
+            if (!_audio.IsRecording)
+            {
+                _isRecording = false;
+                StopActiveRecordingInfrastructure();
+                ApplyTransientIdleFeedback(Loc.Instance["Status.NoMicrophone"], feedbackIsError: true);
+                return;
+            }
+
+            _sound.PlayStartSound();
+
+            if (_settings.Current.AudioDuckingEnabled)
+                _audioDucking.DuckAudio(_settings.Current.AudioDuckingLevel);
+            if (_settings.Current.PauseMediaDuringRecording)
+                _mediaPause.PauseMedia();
+
+            _currentRecordingId = Guid.NewGuid();
+            _eventBus.Publish(new RecordingStartedEvent
+            {
+                AppName = _activeWindow.GetActiveWindowTitle(),
+                AppProcessName = _activeWindow.GetActiveWindowProcessName(),
+                RecordingId = _currentRecordingId
+            });
+
+            State = DictationState.Recording;
+            CurrentHotkeyMode = _hotkey.CurrentMode;
+            StatusText = GetRecordingStatusText();
+            TranscribedText = "";
+            IsOverlayVisible = true;
+            RecordingSeconds = 0;
+            _hotkey.IsCancelShortcutEnabled = ShouldEnableCancelShortcut(_isRecording, _pendingJobCount);
+
+            _durationTimer?.Dispose();
+            _durationTimer = new System.Timers.Timer(100);
+            _durationTimer.Elapsed += (_, _) =>
+            {
+                RecordingSeconds = _audio.RecordingDuration.TotalSeconds;
+                if (_hotkey.CurrentMode is { } mode && mode != CurrentHotkeyMode)
+                    CurrentHotkeyMode = mode;
+            };
+            _durationTimer.Start();
         }
-        catch (OperationCanceledException)
+        finally
         {
-            _isRecording = false;
-            return;
+            _isStartingRecording = false;
         }
-        catch (InvalidOperationException ex)
-        {
-            ApplyModelLoadFailureFeedback(ex);
-            return;
-        }
-        catch (IOException ex)
-        {
-            ApplyModelLoadFailureFeedback(ex);
-            return;
-        }
-        catch (ArgumentException ex)
-        {
-            ApplyModelLoadFailureFeedback(ex);
-            return;
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            ApplyModelLoadFailureFeedback(ex);
-            return;
-        }
-
-        if (!_modelManager.Engine.IsModelLoaded)
-        {
-            _isRecording = false;
-            ApplyTransientIdleFeedback(Loc.Instance["Status.NoModelLoaded"], feedbackIsError: true);
-            return;
-        }
-
-        if (!_audio.HasDevice)
-        {
-            _isRecording = false;
-            ApplyTransientIdleFeedback(Loc.Instance["Status.NoMicrophone"], feedbackIsError: true);
-            return;
-        }
-
-        ActiveProcessName = _capturedProcessName;
-        ActiveWorkflowName = _activeWorkflow?.Name;
-
-        _audio.WhisperModeEnabled = EffectiveWhisperMode;
-
-        // Live transcription: streaming handler polls growing buffer periodically
-        _partialSegments.Clear();
-        PartialText = "";
-        _vad?.Dispose();
-        _vad = null;
-        _streamingHandler.Stop();
-
-        var isPluginModel = _modelManager.ActiveModelId is not null
-            && ModelManagerService.IsPluginModel(_modelManager.ActiveModelId);
-
-        var liveTranscriptionMode = LiveTranscriptionStartupPolicy.Select(
-            _settings.Current,
-            isPluginModel,
-            _modelManager.ActiveTranscriptionPlugin);
-
-        if (liveTranscriptionMode is LiveTranscriptionStartupMode.PluginStreaming
-            or LiveTranscriptionStartupMode.PluginPollingFallback)
-        {
-            _streamingHandler.Start(EffectiveLanguage, EffectiveTask, () => _isRecording);
-        }
-        else if (liveTranscriptionMode == LiveTranscriptionStartupMode.LegacyVad)
-        {
-            // VAD fallback for non-plugin models
-            _vad = CreateVoiceActivityDetector();
-            _audio.SamplesAvailable += OnSamplesAvailable;
-        }
-
-        _audio.StartRecording();
-        if (!_audio.IsRecording)
-        {
-            _isRecording = false;
-            StopActiveRecordingInfrastructure();
-            ApplyTransientIdleFeedback(Loc.Instance["Status.NoMicrophone"], feedbackIsError: true);
-            return;
-        }
-
-        _sound.PlayStartSound();
-
-        if (_settings.Current.AudioDuckingEnabled)
-            _audioDucking.DuckAudio(_settings.Current.AudioDuckingLevel);
-        if (_settings.Current.PauseMediaDuringRecording)
-            _mediaPause.PauseMedia();
-
-        _currentRecordingId = Guid.NewGuid();
-        _eventBus.Publish(new RecordingStartedEvent
-        {
-            AppName = _activeWindow.GetActiveWindowTitle(),
-            AppProcessName = _activeWindow.GetActiveWindowProcessName(),
-            RecordingId = _currentRecordingId
-        });
-
-        State = DictationState.Recording;
-        CurrentHotkeyMode = _hotkey.CurrentMode;
-        StatusText = GetRecordingStatusText();
-        TranscribedText = "";
-        IsOverlayVisible = true;
-        RecordingSeconds = 0;
-        _hotkey.IsCancelShortcutEnabled = ShouldEnableCancelShortcut(_isRecording, _pendingJobCount);
-
-        _durationTimer?.Dispose();
-        _durationTimer = new System.Timers.Timer(100);
-        _durationTimer.Elapsed += (_, _) =>
-        {
-            RecordingSeconds = _audio.RecordingDuration.TotalSeconds;
-            if (_hotkey.CurrentMode is { } mode && mode != CurrentHotkeyMode)
-                CurrentHotkeyMode = mode;
-        };
-        _durationTimer.Start();
     }
 
     [RelayCommand]
     private async Task StopRecording()
     {
+        if (_isStartingRecording) return;
         if (!_isRecording || _isStoppingRecording) return;
         _isStoppingRecording = true;
 
@@ -1801,6 +1814,8 @@ internal static class DictationFinalTextPolicy
     private const int MinimumRepeatedPhraseCharacters = 8;
     private const int MaximumRepeatReductionPasses = 8;
     private static readonly Regex AutomaticEllipsisRegex = new(@"\s*(?:\.{3,}|\u2026)\s*", RegexOptions.CultureInvariant);
+    private static readonly Regex PadTokenRegex =
+        new(@"<pad>\s*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// Joins preview segments.
@@ -1829,7 +1844,37 @@ internal static class DictationFinalTextPolicy
     /// Selects raw text.
     /// </summary>
     public static string SelectRawText(string? finalText) =>
-        NormalizeDictationArtifacts(finalText?.Trim() ?? "");
+        SanitizePadGarbage(NormalizeDictationArtifacts(finalText?.Trim() ?? ""));
+
+    /// <summary>
+    /// Returns whether text is Parakeet decoder pad garbage.
+    /// </summary>
+    public static bool IsPadGarbage(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var stripped = PadTokenRegex.Replace(text, "").Trim();
+        if (stripped.Length == 0)
+            return text.Contains("<pad>", StringComparison.OrdinalIgnoreCase);
+
+        return PadTokenRegex.Matches(text).Count >= 3 && stripped.Length < 8;
+    }
+
+    private static string SanitizePadGarbage(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "";
+
+        var stripped = PadTokenRegex.Replace(text, "").Trim();
+        if (stripped.Length == 0)
+            return "";
+
+        if (PadTokenRegex.Matches(text).Count >= 3 && stripped.Length < 8)
+            return "";
+
+        return stripped;
+    }
 
     /// <summary>
     /// Selects trusted live text.
@@ -1837,7 +1882,13 @@ internal static class DictationFinalTextPolicy
     public static string? SelectTrustedLiveText(string? liveText)
     {
         var text = liveText?.Trim();
-        return string.IsNullOrWhiteSpace(text) ? null : text;
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        if (IsPadGarbage(text))
+            return null;
+
+        return SanitizePadGarbage(text);
     }
 
     /// <summary>

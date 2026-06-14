@@ -486,6 +486,22 @@ public class LiveTranscriptionStartupPolicyTests
     }
 
     [Fact]
+    public void ParakeetOpenVino_DisablesLiveTranscriptionPolling()
+    {
+        var plugin = new FakePolicyTranscriptionPlugin(
+            supportsStreaming: false,
+            supportsModelDownload: true,
+            providerId: "parakeet-openvino");
+
+        var mode = LiveTranscriptionStartupPolicy.Select(
+            AppSettings.Default,
+            isPluginModel: true,
+            plugin);
+
+        Assert.Equal(LiveTranscriptionStartupMode.None, mode);
+    }
+
+    [Fact]
     public void OnlineBatchProvider_DefaultsToNoLiveTranscription()
     {
         var plugin = new FakePolicyTranscriptionPlugin(supportsStreaming: false, supportsModelDownload: false);
@@ -524,16 +540,20 @@ public class LiveTranscriptionStartupPolicyTests
 
     private sealed class FakePolicyTranscriptionPlugin : ITranscriptionEnginePlugin
     {
-        public FakePolicyTranscriptionPlugin(bool supportsStreaming, bool supportsModelDownload)
+        public FakePolicyTranscriptionPlugin(
+            bool supportsStreaming,
+            bool supportsModelDownload,
+            string providerId = "policy")
         {
             SupportsStreaming = supportsStreaming;
             SupportsModelDownload = supportsModelDownload;
+            ProviderId = providerId;
         }
 
         public string PluginId => "com.test.policy";
         public string PluginName => "Policy Test";
         public string PluginVersion => "1.0.0";
-        public string ProviderId => "policy";
+        public string ProviderId { get; }
         public string ProviderDisplayName => "Policy";
         public bool IsConfigured => true;
         public IReadOnlyList<PluginModelInfo> TranscriptionModels { get; } =
@@ -840,6 +860,24 @@ public class StreamingTranscriptStateTests
 
 public class ParakeetTailHelperTests
 {
+    [Fact]
+    public void IsParakeetModel_MatchesOpenVinoPluginModelId()
+    {
+        Assert.True(ParakeetTailHelper.IsParakeetModel(ParakeetTailHelper.ParakeetOpenVinoModelId));
+    }
+
+    [Fact]
+    public void SelectResult_ForOpenVinoParakeet_PrefersFullDecodeOverPartials()
+    {
+        var selection = ParakeetTailHelper.SelectResult(
+            ParakeetTailHelper.ParakeetOpenVinoModelId,
+            "final full decode",
+            ["partial text"]);
+
+        Assert.Equal("final full decode", selection.Text);
+        Assert.Equal("full_decode", selection.Source);
+    }
+
     [Fact]
     public void AppendTailGuard_AddsExpectedSilenceSamples()
     {

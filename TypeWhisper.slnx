@@ -8,4 +8,7 @@
     <Project Path="tests/TypeWhisper.Core.Tests/TypeWhisper.Core.Tests.csproj" />
     <Project Path="tests/TypeWhisper.PluginSystem.Tests/TypeWhisper.PluginSystem.Tests.csproj" />
   </Folder>
+  <Folder Name="/plugins/">
+    <Project Path="plugins/TypeWhisper.Plugin.ParakeetOpenVino/TypeWhisper.Plugin.ParakeetOpenVino.csproj" />
+  </Folder>
 </Solution>
