@@ -21,6 +21,8 @@ internal sealed class StreamingTranscriptState
     private const double CommittedWordsPerSecond = 2.0;
     private const int MinRevisableTailWords = 12;
 
+    private TranscriptMergeMode _mergeMode = TranscriptMergeMode.BaselineAligner;
+
     /// <summary>
     /// Gets the most recent text shown in the live preview.
     /// </summary>
@@ -29,8 +31,9 @@ internal sealed class StreamingTranscriptState
     /// <summary>
     /// Starts a new streaming transcript session and returns its version token.
     /// </summary>
-    public int StartSession()
+    public int StartSession(TranscriptMergeMode mergeMode = TranscriptMergeMode.BaselineAligner)
     {
+        _mergeMode = mergeMode;
         _confirmedText = "";
         _lastDisplayedText = "";
         _lastFinalSegment = "";
@@ -136,17 +139,14 @@ internal sealed class StreamingTranscriptState
         if (rollingWindow)
         {
             var revisable = GetRevisableText(_confirmedText);
-            var mergedTail = StreamingHandler.StabilizeRollingText(
-                revisable,
-                text,
-                rollingTailWindow: true);
+            var mergedTail = MergeRolling(revisable, text, rollingTailWindow: true);
             stable = string.IsNullOrEmpty(_immutablePrefix)
                 ? mergedTail
                 : StreamingHandler.JoinPreviewParts(_immutablePrefix, mergedTail);
         }
         else
         {
-            stable = StreamingHandler.StabilizeText(_confirmedText, text);
+            stable = MergeNonRolling(_confirmedText, text);
         }
 
         if (rollingWindow && !IsAcceptableRollingMerge(stable))
@@ -160,6 +160,16 @@ internal sealed class StreamingTranscriptState
         displayText = stable;
         return true;
     }
+
+    private string MergeRolling(string confirmed, string windowText, bool rollingTailWindow) =>
+        _mergeMode == TranscriptMergeMode.Timeline
+            ? TranscriptTimelineMerger.Merge(confirmed, windowText, rollingTailWindow)
+            : StreamingHandler.StabilizeRollingText(confirmed, windowText, rollingTailWindow);
+
+    private string MergeNonRolling(string confirmed, string windowText) =>
+        _mergeMode == TranscriptMergeMode.Timeline
+            ? TranscriptTimelineMerger.Merge(confirmed, windowText)
+            : StreamingHandler.StabilizeText(confirmed, windowText);
 
     private void TryGrowImmutablePrefix(int totalSamplesRecorded, int windowWordCount)
     {

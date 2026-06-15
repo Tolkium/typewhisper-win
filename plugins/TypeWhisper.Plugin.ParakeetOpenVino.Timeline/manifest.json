@@ -1,0 +1,10 @@
+﻿{
+  "id": "com.tolkium.parakeet-openvino-timeline",
+  "name": "Parakeet OpenVINO Timeline (experimental)",
+  "version": "0.4.0-alpha",
+  "minHostVersion": "0.8.4",
+  "author": "Tolkium",
+  "description": "Experimental Parakeet OpenVINO plugin paired with token/timeline live merge in the host app. Same NPU/GPU engine as baseline — compare side by side.",
+  "assemblyName": "TypeWhisper.Plugin.ParakeetOpenVino.Timeline.dll",
+  "pluginClass": "TypeWhisper.Plugin.ParakeetOpenVino.Timeline.ParakeetOpenVinoTimelinePlugin"
+}

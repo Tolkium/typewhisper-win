@@ -5,10 +5,11 @@ namespace TypeWhisper.Windows.Services;
 internal static class ParakeetTailHelper
 {
     internal const string ParakeetModelId = "plugin:com.typewhisper.sherpa-onnx:parakeet-tdt-0.6b";
-    internal const string ParakeetOpenVinoPluginId = "com.whispernpu.parakeet-openvino";
+    internal const string ParakeetOpenVinoPluginId = ParakeetPluginIds.BaselinePluginId;
+    internal const string ParakeetOpenVinoTimelinePluginId = ParakeetPluginIds.TimelinePluginId;
     internal const string ParakeetOpenVinoTolkiumPluginId = "com.tolkium.parakeet-openvino";
-    internal const string ParakeetOpenVinoModelId =
-        "plugin:com.whispernpu.parakeet-openvino:parakeet-tdt-0.6b-v3-openvino";
+    internal const string ParakeetOpenVinoModelId = ParakeetPluginIds.BaselineModelId;
+    internal const string ParakeetOpenVinoTimelineModelId = ParakeetPluginIds.TimelineModelId;
     internal const string ParakeetOpenVinoTolkiumModelId =
         "plugin:com.tolkium.parakeet-openvino:parakeet-tdt-0.6b-v3-openvino";
     internal const int TailGuardMilliseconds = 200;
@@ -21,8 +22,10 @@ internal static class ParakeetTailHelper
         string.Equals(activeModelId, ParakeetModelId, StringComparison.Ordinal)
         || string.Equals(activeModelId, ParakeetOpenVinoModelId, StringComparison.Ordinal)
         || string.Equals(activeModelId, ParakeetOpenVinoTolkiumModelId, StringComparison.Ordinal)
+        || string.Equals(activeModelId, ParakeetOpenVinoTimelineModelId, StringComparison.Ordinal)
         || (activeModelId is not null
             && (activeModelId.StartsWith($"plugin:{ParakeetOpenVinoPluginId}:", StringComparison.Ordinal)
+                || activeModelId.StartsWith($"plugin:{ParakeetOpenVinoTimelinePluginId}:", StringComparison.Ordinal)
                 || activeModelId.StartsWith($"plugin:{ParakeetOpenVinoTolkiumPluginId}:", StringComparison.Ordinal)));
 
     /// <summary>
@@ -62,10 +65,12 @@ internal static class ParakeetTailHelper
         {
             if (!string.IsNullOrWhiteSpace(partialText))
             {
-                var merged = StreamingHandler.StabilizeRollingText(
-                    partialText,
-                    fullText,
-                    rollingTailWindow: true);
+                var merged = ParakeetPluginIds.UsesTimelineMerge(activeModelId)
+                    ? TranscriptTimelineMerger.Merge(partialText, fullText, rollingTailWindow: true)
+                    : StreamingHandler.StabilizeRollingText(
+                        partialText,
+                        fullText,
+                        rollingTailWindow: true);
                 if (partialText.Length > fullText.Length)
                 {
                     return new ParakeetTranscriptionSelection(

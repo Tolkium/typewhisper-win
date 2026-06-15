@@ -830,7 +830,13 @@ internal sealed class PluginTranscriptionEngineAdapter : ITranscriptionEngine
             && _plugin.GetType().FullName?.Contains("ParakeetOpenVino", StringComparison.Ordinal) == true)
         {
             return await ParakeetLongAudioTranscription.TranscribeAsync(
-                _plugin, audioSamples, language, translate, sentenceEndSampleHints, cancellationToken);
+                _plugin,
+                audioSamples,
+                language,
+                translate,
+                sentenceEndSampleHints,
+                ParakeetPluginIds.UsesTimelineMerge(_plugin.PluginId),
+                cancellationToken);
         }
 
         var wavBytes = WavEncoder.Encode(audioSamples);

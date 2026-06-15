@@ -64,7 +64,10 @@ public sealed class StreamingHandler : IDisposable
         Stop();
         ClearPendingStreamingAudio();
 
-        var sessionVersion = _transcriptState.StartSession();
+        var sessionVersion = _transcriptState.StartSession(
+            ParakeetPluginIds.UsesTimelineMerge(_modelManager.ActiveModelId)
+                ? TranscriptMergeMode.Timeline
+                : TranscriptMergeMode.BaselineAligner);
         _sentenceBoundaryTracker.Reset();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;

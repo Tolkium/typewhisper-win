@@ -19,6 +19,7 @@ internal static class ParakeetLongAudioTranscription
         string? language,
         bool translate,
         IReadOnlyList<int>? sentenceEndSampleHints,
+        bool useTimelineMerge,
         CancellationToken cancellationToken)
     {
         if (!ShouldChunk(audioSamples.Length))
@@ -69,7 +70,9 @@ internal static class ParakeetLongAudioTranscription
             var beforeMerge = mergedText;
             mergedText = string.IsNullOrEmpty(mergedText)
                 ? text
-                : StreamingHandler.StabilizeRollingText(mergedText, text);
+                : (useTimelineMerge
+                    ? TranscriptTimelineMerger.Merge(mergedText, text)
+                    : StreamingHandler.StabilizeRollingText(mergedText, text));
 
             if (TranscriptTraceLog.IsEnabled)
             {

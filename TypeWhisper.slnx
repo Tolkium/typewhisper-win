@@ -10,5 +10,6 @@
   </Folder>
   <Folder Name="/plugins/">
     <Project Path="plugins/TypeWhisper.Plugin.ParakeetOpenVino/TypeWhisper.Plugin.ParakeetOpenVino.csproj" />
+    <Project Path="plugins/TypeWhisper.Plugin.ParakeetOpenVino.Timeline/TypeWhisper.Plugin.ParakeetOpenVino.Timeline.csproj" />
   </Folder>
 </Solution>

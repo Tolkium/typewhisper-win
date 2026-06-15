@@ -51,8 +51,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         "OpenVINO NPU encoder + CPU decoder");
 
     public string PluginId => "com.whispernpu.parakeet-openvino";
-    public string PluginName => "Parakeet OpenVINO (NPU/GPU)";
-    public string PluginVersion => "0.3.2";
+    public string PluginName => "Parakeet OpenVINO Baseline (NPU/GPU)";
+    public string PluginVersion => "0.3.3";
 
     public string ProviderId => "parakeet-openvino";
     public string ProviderDisplayName => "Parakeet OpenVINO (lokalne)";
