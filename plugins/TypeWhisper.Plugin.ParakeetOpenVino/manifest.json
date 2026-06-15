@@ -1,10 +1,10 @@
 ﻿{
   "id": "com.whispernpu.parakeet-openvino",
   "name": "Parakeet OpenVINO (NPU/GPU)",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "minHostVersion": "0.8.4",
   "author": "WhisperNPU",
-  "description": "Local Parakeet TDT 0.6B v3 via OpenVINO on Intel NPU or GPU. Batch transcription (no live polling).",
+  "description": "Local Parakeet TDT 0.6B v3 via OpenVINO on Intel NPU or GPU. Batch transcription with polling live preview.",
   "assemblyName": "TypeWhisper.Plugin.ParakeetOpenVino.dll",
   "pluginClass": "TypeWhisper.Plugin.ParakeetOpenVino.ParakeetOpenVinoPlugin"
 }

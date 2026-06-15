@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -550,7 +551,16 @@ public partial class PluginItemViewModel : ObservableObject
         _isEnabled = isEnabled;
 
         if (isEnabled)
-            _settingsView = plugin.Instance.CreateSettingsView();
+        {
+            try
+            {
+                _settingsView = plugin.Instance.CreateSettingsView();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[Plugins] Failed to create settings view for {plugin.Manifest.Id}: {ex.Message}");
+            }
+        }
     }
 
     async partial void OnIsEnabledChanged(bool value)
@@ -558,7 +568,14 @@ public partial class PluginItemViewModel : ObservableObject
         if (value)
         {
             await _pluginManager.EnablePluginAsync(Id);
-            SettingsView = _plugin.Instance.CreateSettingsView();
+            try
+            {
+                SettingsView = _plugin.Instance.CreateSettingsView();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[Plugins] Failed to create settings view for {Id}: {ex.Message}");
+            }
         }
         else
         {
@@ -573,7 +590,16 @@ public partial class PluginItemViewModel : ObservableObject
     {
         // Lazy-load settings view when first expanded
         if (value && SettingsView is null && IsEnabled)
-            SettingsView = _plugin.Instance.CreateSettingsView();
+        {
+            try
+            {
+                SettingsView = _plugin.Instance.CreateSettingsView();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[Plugins] Failed to create settings view for {Id}: {ex.Message}");
+            }
+        }
     }
 
     [RelayCommand]

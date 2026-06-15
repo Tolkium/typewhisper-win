@@ -61,11 +61,10 @@ nahratý predchádzajúci device.
 
 ## Live preview (v0.2.5+)
 
-Parakeet OpenVINO je **batch sidecar** — live polling počas nahrávania je vypnutý
-(`ProviderId = parakeet-openvino`). Finálna transkripcia ide až po uvoľnení klávesy.
+Parakeet OpenVINO je **batch sidecar**. Live preview používa polling fallback:
+TypeWhisper posiela počas nahrávania rastúci audio buffer a plugin vracia priebežný text.
 
-Ak rebuildneš TypeWhisper z fork-u, host navyše filtruje `<pad>` garbage a preferuje
-full-decode pred partial preview.
+Host aj plugin filtrujú `<pad>` garbage a finálny decode stále preferuje full audio.
 
 ## Stav v0.1.0
 

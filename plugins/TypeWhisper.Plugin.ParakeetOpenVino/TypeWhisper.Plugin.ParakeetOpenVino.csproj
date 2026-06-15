@@ -9,6 +9,9 @@
     <NoWarn>$(NoWarn);CS1591;CS1572;CS1573;CS1574;CS1581;CS1584</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="TypeWhisper.PluginSystem.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\TypeWhisper.PluginSDK\TypeWhisper.PluginSDK.csproj" />
   </ItemGroup>
   <ItemGroup>

@@ -262,7 +262,13 @@ public sealed class ModelManagerService : INotifyPropertyChanged, IDisposable
         SetStatus(modelId, ModelStatus.LoadingModel);
         try
         {
-            var accelerationPreference = GetAccelerationPreference(_settings.Current.LocalModelAcceleration);
+            var normalizedAcceleration = TranscriptionAccelerationAdvisorSupport.ApplyPluginAdvisor(
+                plugin,
+                AppSettings.NormalizeLocalModelAcceleration(_settings.Current.LocalModelAcceleration));
+            if (!string.Equals(_settings.Current.LocalModelAcceleration, normalizedAcceleration, StringComparison.Ordinal))
+                _settings.Save(_settings.Current with { LocalModelAcceleration = normalizedAcceleration });
+
+            var accelerationPreference = GetAccelerationPreference(normalizedAcceleration);
             plugin.SetAccelerationPreference(accelerationPreference);
 
             if (plugin.SupportsModelDownload)
@@ -776,7 +782,8 @@ internal sealed class NoOpTranscriptionEngine : ITranscriptionEngine
     public Task<TranscriptionResult> TranscribeAsync(
         float[] audioSamples, string? language = null,
         TranscriptionTask task = TranscriptionTask.Transcribe,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<int>? sentenceEndSampleHints = null) =>
         Task.FromResult(new TranscriptionResult { Text = string.Empty });
 }
 
@@ -814,10 +821,19 @@ internal sealed class PluginTranscriptionEngineAdapter : ITranscriptionEngine
     public async Task<TranscriptionResult> TranscribeAsync(
         float[] audioSamples, string? language = null,
         TranscriptionTask task = TranscriptionTask.Transcribe,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<int>? sentenceEndSampleHints = null)
     {
-        var wavBytes = WavEncoder.Encode(audioSamples);
         var translate = task == TranscriptionTask.Translate && _plugin.SupportsTranslation;
+
+        if (ParakeetLongAudioTranscription.ShouldChunk(audioSamples.Length)
+            && _plugin.GetType().FullName?.Contains("ParakeetOpenVino", StringComparison.Ordinal) == true)
+        {
+            return await ParakeetLongAudioTranscription.TranscribeAsync(
+                _plugin, audioSamples, language, translate, sentenceEndSampleHints, cancellationToken);
+        }
+
+        var wavBytes = WavEncoder.Encode(audioSamples);
         var result = await _plugin.TranscribeAsync(wavBytes, language, translate, null, cancellationToken);
         return new TranscriptionResult
         {

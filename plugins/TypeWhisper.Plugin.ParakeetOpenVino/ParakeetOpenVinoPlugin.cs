@@ -14,7 +14,7 @@ namespace TypeWhisper.Plugin.ParakeetOpenVino;
 /// Parakeet TDT 0.6B v3 on Intel OpenVINO (NPU/GPU/CPU) via Python sidecar.
 /// SupportsModelDownload lets TypeWhisper manage setup/download state for the local model.
 /// </summary>
-public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionEnginePlugin
+public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionEnginePlugin, ITranscriptionAccelerationAdvisor
 {
     public const string ModelId = "parakeet-tdt-0.6b-v3-openvino";
 
@@ -46,10 +46,13 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private int _requestId;
     private TranscriptionAccelerationPreference _accelerationPreference =
         TranscriptionAccelerationPreference.Auto;
+    private TranscriptionAccelerationStatus _accelerationStatus = new(
+        TranscriptionAccelerationBackend.Cpu,
+        "OpenVINO NPU encoder + CPU decoder");
 
     public string PluginId => "com.whispernpu.parakeet-openvino";
     public string PluginName => "Parakeet OpenVINO (NPU/GPU)";
-    public string PluginVersion => "0.3.0";
+    public string PluginVersion => "0.3.2";
 
     public string ProviderId => "parakeet-openvino";
     public string ProviderDisplayName => "Parakeet OpenVINO (lokalne)";
@@ -59,12 +62,14 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     public bool SupportsModelDownload => true;
 
     public IReadOnlyList<TranscriptionAccelerationBackend> SupportedAccelerationBackends { get; } =
-        [TranscriptionAccelerationBackend.Cpu];
+    [
+        TranscriptionAccelerationBackend.Cpu,
+        TranscriptionAccelerationBackend.NvidiaCuda,
+    ];
 
     public TranscriptionAccelerationPreference AccelerationPreference => _accelerationPreference;
 
-    public TranscriptionAccelerationStatus AccelerationStatus =>
-        BuildAccelerationStatus();
+    public TranscriptionAccelerationStatus AccelerationStatus => _accelerationStatus;
 
     public IReadOnlyList<PluginModelInfo> TranscriptionModels { get; } =
     [
@@ -90,6 +95,22 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
             _targetDevice = normalized;
             TrySetSetting("targetDevice", _targetDevice);
+            _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
+                new ParakeetOpenVinoAcceleration.Resolution(
+                    normalized,
+                    normalized == "CPU"
+                        ? TranscriptionAccelerationBackend.Cpu
+                        : TranscriptionAccelerationBackend.NvidiaCuda,
+                    normalized switch
+                    {
+                        "GPU" => "OpenVINO GPU encoder + decoder",
+                        "CPU" => "OpenVINO CPU INT8",
+                        _ => "OpenVINO NPU encoder + CPU decoder",
+                    },
+                    "Manual device override in plugin settings. Engine acceleration may differ until reload.",
+                    null),
+                _loadedDevice,
+                _activeBackend);
             Log(PluginLogLevel.Info, $"Target device changed to {_targetDevice}; reload model to apply");
         }
     }
@@ -118,6 +139,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     {
         _host = host;
         TryLoadPersistedSettings();
+        ApplyAccelerationPreference(_accelerationPreference);
         // Always pin WhisperNPU venv unless user explicitly set a working path in settings.
         if (!File.Exists(_pythonPath) || !_pythonPath.StartsWith(@"C:\WhisperNPU\", StringComparison.OrdinalIgnoreCase))
         {
@@ -139,7 +161,23 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     public UserControl? CreateSettingsView() => new ParakeetOpenVinoSettingsView(this);
 
     public void SetAccelerationPreference(TranscriptionAccelerationPreference preference) =>
+        ApplyAccelerationPreference(preference);
+
+    public string? GetSuggestedHostAcceleration(TranscriptionAccelerationPreference preference) =>
+        ParakeetOpenVinoAcceleration.GetSuggestedHostAcceleration(preference);
+
+    private void ApplyAccelerationPreference(TranscriptionAccelerationPreference preference)
+    {
         _accelerationPreference = preference;
+        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference);
+        _targetDevice = resolution.TargetDevice;
+        TrySetSetting("targetDevice", _targetDevice);
+        _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
+            resolution,
+            _loadedDevice,
+            _activeBackend);
+        Log(PluginLogLevel.Info, $"Acceleration preference {preference} -> OpenVINO device {_targetDevice}");
+    }
 
     public void SelectModel(string modelId)
     {
@@ -250,6 +288,10 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             _selectedModelId = modelId;
             _loadedDevice = loadedDevice;
             _activeBackend = backend;
+            _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
+                ParakeetOpenVinoAcceleration.Resolve(_accelerationPreference),
+                _loadedDevice,
+                _activeBackend);
             Log(
                 PluginLogLevel.Info,
                 $"Parakeet loaded on {_loadedDevice} backend='{_activeBackend ?? "unknown"}' in {loadWatch.Elapsed.TotalSeconds:F1}s");
@@ -269,7 +311,9 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         byte[] wavAudio, string? language, bool translate, string? prompt, CancellationToken ct)
     {
         if (translate)
-            throw new NotSupportedException("Parakeet plugin does not support translate task.");
+            throw new NotSupportedException(
+                "Parakeet OpenVINO does not translate during transcription. " +
+                "Set a target language in TypeWhisper to translate after transcription.");
 
         var transcribeWatch = Stopwatch.StartNew();
         await _sidecarLock.WaitAsync(ct);
@@ -336,6 +380,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             _loadedModelId = null;
             _loadedDevice = null;
             _activeBackend = null;
+            ApplyAccelerationPreference(_accelerationPreference);
         }
         finally
         {
@@ -480,29 +525,6 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         _loadedModelId = null;
         _loadedDevice = null;
         _activeBackend = null;
-    }
-
-    private TranscriptionAccelerationStatus BuildAccelerationStatus()
-    {
-        var displayDevice = _loadedDevice ?? TargetDevice;
-        var displayText = displayDevice switch
-        {
-            "NPU" => "OpenVINO NPU encoder + CPU decoder",
-            "GPU" => "OpenVINO GPU encoder + decoder",
-            _ => "CPU INT8",
-        };
-
-        var needsReload = _loadedDevice is not null
-            && !string.Equals(_loadedDevice, TargetDevice, StringComparison.Ordinal);
-        var detail = needsReload
-            ? $"Loaded on {_loadedDevice}; selected {TargetDevice}. Reload the model to apply."
-            : _activeBackend;
-
-        return new TranscriptionAccelerationStatus(
-            TranscriptionAccelerationBackend.Cpu,
-            displayText,
-            detail,
-            needsReload);
     }
 
     private async Task<JsonElement> SendCommandAsync(object command, CancellationToken ct)

@@ -28,7 +28,8 @@ public interface ITranscriptionEngine
         float[] audioSamples,
         string? language = null,
         TranscriptionTask task = TranscriptionTask.Transcribe,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<int>? sentenceEndSampleHints = null);
 }
 
 /// <summary>

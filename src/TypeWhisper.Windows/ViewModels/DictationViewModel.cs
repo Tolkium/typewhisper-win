@@ -932,7 +932,9 @@ public partial class DictationViewModel : ObservableObject, IDisposable
         try
         {
             var stopRequestedAtUtc = DateTime.UtcNow;
-            var streamingText = _streamingHandler.Stop();
+            var stopResult = _streamingHandler.Stop();
+            var streamingText = stopResult.LiveText;
+            var sentenceEndSampleHints = stopResult.SentenceEndSampleHints;
             _audio.SamplesAvailable -= OnSamplesAvailable;
 
             var samples = await _audio.StopRecordingAsync();
@@ -1032,6 +1034,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable
                 _modelManager.ActiveModelId,
                 apiSessionId,
                 aggressiveShortQuietHandling,
+                sentenceEndSampleHints,
                 new RecordingTailDiagnosticSnapshot(
                     _modelManager.ActiveModelId,
                     "local",
@@ -1140,7 +1143,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable
             try
             {
                 result = await _modelManager.Engine.TranscribeAsync(
-                    decodeSamples, language, job.EffectiveTask, ct);
+                    decodeSamples, language, job.EffectiveTask, ct, job.SentenceEndSampleHints);
                 fullDecodeText = result.Text ?? "";
                 fullDecodeDetectedLanguage = result.DetectedLanguage;
             }
@@ -1249,7 +1252,8 @@ public partial class DictationViewModel : ObservableObject, IDisposable
                         ParakeetTailHelper.AppendTailGuard(job.Samples),
                         job.EffectiveLanguage == "auto" ? null : job.EffectiveLanguage,
                         job.EffectiveTask,
-                        ct);
+                        ct,
+                        job.SentenceEndSampleHints);
                     job = job with
                     {
                         Diagnostic = job.Diagnostic with
@@ -1796,6 +1800,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable
         string? ActiveModelIdAtCapture,
         Guid? ApiSessionId,
         bool TranscribeShortQuietClipsAggressively,
+        IReadOnlyList<int> SentenceEndSampleHints,
         RecordingTailDiagnosticSnapshot Diagnostic,
         Guid? RecordingId);
 }

@@ -48,7 +48,9 @@ class _SingleEncoder:
             padded = np.zeros((self.B, self.MEL, self.T), dtype=np.float32)
             padded[:, :, :t] = audio
         elif t > self.T:
-            padded = audio[:, :, : self.T].astype(np.float32, copy=False)
+            # Keep the most recent frames so long dictation/live polling still advances.
+            padded = audio[:, :, -self.T :].astype(np.float32, copy=False)
+            real_length = self.T
         else:
             padded = audio.astype(np.float32, copy=False)
         clamped = np.array([min(real_length, self.T)], dtype=np.int64)

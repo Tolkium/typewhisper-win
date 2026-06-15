@@ -486,7 +486,7 @@ public class LiveTranscriptionStartupPolicyTests
     }
 
     [Fact]
-    public void ParakeetOpenVino_DisablesLiveTranscriptionPolling()
+    public void ParakeetOpenVino_UsesPollingFallback()
     {
         var plugin = new FakePolicyTranscriptionPlugin(
             supportsStreaming: false,
@@ -498,7 +498,7 @@ public class LiveTranscriptionStartupPolicyTests
             isPluginModel: true,
             plugin);
 
-        Assert.Equal(LiveTranscriptionStartupMode.None, mode);
+        Assert.Equal(LiveTranscriptionStartupMode.PluginPollingFallback, mode);
     }
 
     [Fact]
@@ -626,10 +626,10 @@ public class StabilizeTextTests
     }
 
     [Fact]
-    public void CompletelyDifferent_AcceptsNewText()
+    public void CompletelyDifferent_PreservesConfirmedAndAppends()
     {
         var result = StreamingHandler.StabilizeText("Hello world", "Goodbye universe");
-        Assert.Equal("Goodbye universe", result);
+        Assert.Equal("Hello world Goodbye universe", result);
     }
 
     [Fact]
@@ -648,6 +648,230 @@ public class StabilizeTextTests
     {
         var result = StreamingHandler.StabilizeText("", "  Hello  ");
         Assert.Equal("Hello", result);
+    }
+}
+
+public class StabilizeRollingTextTests
+{
+    [Fact]
+    public void EmptyConfirmed_ReturnsWindow()
+    {
+        var result = StreamingHandler.StabilizeRollingText("", "new tail words");
+        Assert.Equal("new tail words", result);
+    }
+
+    [Fact]
+    public void NoOverlap_PreservesConfirmedPrefix()
+    {
+        var confirmed = "Začiatok dlhého textu ktorý musí zostať";
+        var window = "úplne iná veta na konci";
+        var result = StreamingHandler.StabilizeRollingText(confirmed, window);
+        Assert.StartsWith("Začiatok", result);
+        Assert.Contains("úplne iná veta", result);
+    }
+
+    [Fact]
+    public void WordOverlap_AppendsTailWhenCharactersDiffer()
+    {
+        var confirmed = "Alpha beta gamma";
+        var window = "beta gamma delta";
+        var result = StreamingHandler.StabilizeRollingText(confirmed, window);
+        Assert.Equal("Alpha beta gamma delta", result);
+    }
+
+    [Fact]
+    public void WindowExtendsConfirmed_ReturnsWindow()
+    {
+        var result = StreamingHandler.StabilizeRollingText(
+            "Hello world",
+            "Hello world, how are you?");
+        Assert.Equal("Hello world, how are you?", result);
+    }
+
+    [Fact]
+    public void RollingTail_WordOverlap_DoesNotDuplicateMiddle()
+    {
+        var confirmed = "No takže skúsimme budem hovoriť nejakú dlhšiu vetu";
+        var window = "budem hovoriť nejakú dlhšiu vetu a uprostred tej vety budem zastavovať";
+
+        var result = StreamingHandler.StabilizeRollingText(confirmed, window, rollingTailWindow: true);
+
+        Assert.Equal(
+            "No takže skúsimme budem hovoriť nejakú dlhšiu vetu a uprostred tej vety budem zastavovať",
+            result);
+    }
+
+    [Fact]
+    public void RollingTail_RepeatedWindow_DoesNotGrow()
+    {
+        var confirmed = "Alpha beta gamma delta epsilon";
+        var window = "gamma delta epsilon zeta eta";
+
+        var once = StreamingHandler.StabilizeRollingText(confirmed, window, rollingTailWindow: true);
+        var twice = StreamingHandler.StabilizeRollingText(once, window, rollingTailWindow: true);
+
+        Assert.Equal("Alpha beta gamma delta epsilon zeta eta", once);
+        Assert.Equal(once, twice);
+    }
+
+    [Fact]
+    public void RollingTail_ASRVariation_StillMergesWithoutFullDuplicate()
+    {
+        var confirmed = "skúsimne budem hovoriť nejakú";
+        var window = "hovoriť nejakú dlhšiu vetu a potom pauza";
+
+        var result = StreamingHandler.StabilizeRollingText(confirmed, window, rollingTailWindow: true);
+
+        Assert.StartsWith("skúsimne budem hovoriť nejakú", result);
+        Assert.Contains("dlhšiu vetu", result);
+        Assert.DoesNotContain("hovoriť nejakú hovoriť", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RollingTail_FrozenPrefix_DoesNotRewriteCommittedStart()
+    {
+        var confirmed = "Zmrazený začiatok vetu ktorý už nemá meniť";
+        var revisedWindow = "ktorý už nemá meniť ale koniec sa mení";
+
+        var result = StreamingHandler.StabilizeRollingText(
+            confirmed,
+            revisedWindow,
+            rollingTailWindow: true,
+            frozenPrefixWordCount: 3);
+
+        Assert.StartsWith("Zmrazený začiatok vetu", result);
+        Assert.Contains("koniec sa mení", result);
+    }
+
+    [Fact]
+    public void RollingTail_LongConfirmed_DoesNotTruncateToWindowOnly()
+    {
+        var confirmed = string.Join(" ", Enumerable.Range(1, 80).Select(i => $"slovo{i}"))
+            + " koniec prvej casti.";
+        var window = "koniec prvej casti. Druha cast pokracuje.";
+
+        var result = StreamingHandler.StabilizeRollingText(confirmed, window, rollingTailWindow: true);
+
+        Assert.StartsWith("slovo1", result);
+        Assert.Contains("slovo40", result);
+        Assert.Contains("Druha cast", result);
+    }
+
+    [Fact]
+    public void RollingTail_AlignedWithWindowOffset_DoesNotPrependWindowGarbage()
+    {
+        var confirmed = "No tak dobrou noc ja idem spat lebo som unaveny";
+        var window = "foo bar idem spat lebo som unaveny ale predtym pouzijem nahravku";
+
+        var result = StreamingHandler.StabilizeRollingText(
+            confirmed,
+            window,
+            rollingTailWindow: true);
+
+        Assert.StartsWith("No tak dobrou noc", result);
+        Assert.Contains("pouzijem nahravku", result);
+        Assert.DoesNotContain("foo bar", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RollingTail_GoodnightDictation_DoesNotTripleOpeningPhrase()
+    {
+        var confirmed = "No tak dobrou noc ja idem spat lebo uz som fakt unaveny. " +
+            "Ale predtym nez mozem spat pouzijem tuto nahravku.";
+        var window = "mozem spat pouzijem tuto nahravku aby som ti povedal ze ten merge " +
+            "No tak dobrou noc ja idem spat lebo uz som fakt unaveny";
+
+        var result = StreamingHandler.StabilizeRollingText(
+            confirmed,
+            window,
+            rollingTailWindow: true);
+
+        var count = CountPhrase(result, "No tak dobrou noc");
+        Assert.Equal(1, count);
+    }
+
+    private static int CountPhrase(string text, string phrase)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(phrase, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            count++;
+            index += phrase.Length;
+        }
+
+        return count;
+    }
+
+    [Fact]
+    public void RollingTail_ModelRestartFromEarlierText_DoesNotDuplicateBeginning()
+    {
+        var confirmed = "Zúsim hovoriť nejakú vetu respektíve vytvoriť konverzáciu. " +
+            "Začnem tým že nejakú tú vetu poviem znova a uvidíme či to nespôsobí problém. " +
+            "Budeme hovoriť o tom ako sa mi podarilo mať sen.";
+        var restartedWindow = "Zúsim hovoriť nejakú vetu respektíve vytvoriť konverzáciu. " +
+            "Začnem tým že nejakú tú vetu poviem znova a uvidíme či to nespôsobí problém.";
+
+        var result = StreamingHandler.StabilizeRollingText(
+            confirmed,
+            restartedWindow,
+            rollingTailWindow: true);
+
+        Assert.Equal(confirmed, result);
+    }
+
+    [Fact]
+    public void CollapsesMultipleAdjacentDuplicatePhrases()
+    {
+        var phrase = "ako sa mi podarilo mať sen";
+        var text = $"{phrase} {phrase} {phrase} a potom som sa zobudil";
+
+        var result = StreamingHandler.StabilizeText("", text);
+
+        var occurrences = CountOccurrences(result, "podarilo mať sen");
+        Assert.Equal(1, occurrences);
+        Assert.Contains("potom som sa zobudil", result);
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
+    }
+
+    [Fact]
+    public void FuzzyOverlap_MergesFinalChunksWithAsrVariation()
+    {
+        var first = "Posledný krát som zistil že už to je v poriadku respektíve zobudil som sa aj reálny";
+        var second = "respektive zobudil som sa aj realny síce veci neboli pokazané ale po štyroch zobudeniach";
+
+        var result = StreamingHandler.StabilizeRollingText(first, second);
+
+        Assert.Contains("Posledný krát", result);
+        Assert.Contains("síce veci", result);
+        Assert.DoesNotContain("reálny respektive zobudil", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PreparePollingBuffer_UsesTailWhenTooLong()
+    {
+        var buffer = Enumerable.Range(0, StreamingTranscriptState.MaxPollingSamples + 16000)
+            .Select(i => (float)i)
+            .ToArray();
+
+        var prepared = StreamingTranscriptState.PreparePollingBuffer(buffer, out var usedTail);
+
+        Assert.True(usedTail);
+        Assert.Equal(StreamingTranscriptState.MaxPollingSamples, prepared.Length);
+        Assert.Equal(buffer[^1], prepared[^1]);
+        Assert.NotEqual(buffer[0], prepared[0]);
     }
 }
 
@@ -856,6 +1080,45 @@ public class StreamingTranscriptStateTests
         Assert.True(currentApplied);
         Assert.Equal("Fresh session text", currentDisplay);
     }
+
+    [Fact]
+    public void PollingTranscript_PreservesImmutablePrefixDuringRollingWindow()
+    {
+        var sut = new StreamingTranscriptState();
+        var sessionVersion = sut.StartSession();
+        var samples = 12 * 16000;
+
+        Assert.True(sut.TryApplyPolling(
+            sessionVersion,
+            "Dobre zaciatok o 3D tlaci a Pruse i3 sliceri.",
+            text => text,
+            out _,
+            rollingWindow: false,
+            totalSamplesRecorded: samples));
+
+        samples = StreamingTranscriptState.MaxPollingSamples + (16 * 16000);
+        Assert.True(sut.TryApplyPolling(
+            sessionVersion,
+            "o 3D tlaci a Pruse i3 sliceri. Pokracujem v dlhom texte.",
+            text => text,
+            out _,
+            rollingWindow: true,
+            totalSamplesRecorded: samples));
+
+        samples += 48000;
+        sut.TryApplyPolling(
+            sessionVersion,
+            "uplne iny tail bez 3d zmienky",
+            text => text,
+            out _,
+            rollingWindow: true,
+            totalSamplesRecorded: samples);
+
+        var finalText = sut.StopSession();
+
+        Assert.Contains("Dobre zaciatok", finalText, StringComparison.Ordinal);
+        Assert.Contains("Pruse", finalText, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 public class ParakeetTailHelperTests
@@ -864,6 +1127,22 @@ public class ParakeetTailHelperTests
     public void IsParakeetModel_MatchesOpenVinoPluginModelId()
     {
         Assert.True(ParakeetTailHelper.IsParakeetModel(ParakeetTailHelper.ParakeetOpenVinoModelId));
+    }
+
+    [Fact]
+    public void SelectResult_MergesLivePrefixWithTailFullDecode()
+    {
+        var partial = "Začiatok textu ktorý sme videli v live preview";
+        var full = "v live preview a potom ešte pokračovanie";
+
+        var selection = ParakeetTailHelper.SelectResult(
+            ParakeetTailHelper.ParakeetOpenVinoTolkiumModelId,
+            full,
+            [partial]);
+
+        Assert.Equal("merged_live_full", selection.Source);
+        Assert.StartsWith("Začiatok", selection.Text);
+        Assert.Contains("pokračovanie", selection.Text);
     }
 
     [Fact]

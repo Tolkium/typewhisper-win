@@ -6,9 +6,11 @@ namespace TypeWhisper.Plugin.ParakeetOpenVino;
 public sealed class ParakeetOpenVinoSettingsView : UserControl
 {
     private readonly ParakeetOpenVinoPlugin _plugin;
+    private readonly TextBlock _deviceStatus;
     private readonly ComboBox _deviceCombo;
     private readonly TextBox _pythonPathBox;
     private readonly TextBox _ovCacheBox;
+    private bool _isRefreshing;
 
     public ParakeetOpenVinoSettingsView(ParakeetOpenVinoPlugin plugin)
     {
@@ -23,11 +25,28 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
             Margin = new Thickness(0, 0, 0, 8),
         };
 
-        var deviceHint = new TextBlock
+        var accelerationHint = new TextBlock
         {
-            Text = "Zariadenie pre inferenciu cez OpenVINO.",
+            Text =
+                "Primary device selection: Engine → Local model acceleration in TypeWhisper.\n" +
+                "• Auto → OpenVINO NPU\n" +
+                "• CPU → OpenVINO CPU\n" +
+                "• NVIDIA CUDA / AMD Vulkan / ROCm → not supported; host switches to Auto (NPU) with a status message.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
+        };
+
+        _deviceStatus = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+            FontWeight = FontWeights.SemiBold,
+        };
+
+        var advancedLabel = new TextBlock
+        {
+            Text = "Advanced override (optional):",
+            Margin = new Thickness(0, 0, 0, 4),
         };
 
         _deviceCombo = new ComboBox
@@ -41,7 +60,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var pythonLabel = new TextBlock
         {
-            Text = "Python (WhisperNPU venv):",
+            Text = "Python executable:",
             Margin = new Thickness(0, 0, 0, 4),
         };
 
@@ -50,11 +69,12 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
             Text = plugin.PythonExecutablePath,
             Margin = new Thickness(0, 0, 0, 8),
         };
-        _pythonPathBox.LostFocus += PythonPathBox_OnLostFocus;
+        _pythonPathBox.LostFocus += (_, _) =>
+            _plugin.PythonExecutablePath = _pythonPathBox.Text.Trim();
 
         var cacheLabel = new TextBlock
         {
-            Text = "OV cache (volitelne):",
+            Text = "OpenVINO cache (optional):",
             Margin = new Thickness(0, 0, 0, 4),
         };
 
@@ -63,16 +83,14 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
             Text = plugin.OpenVinoCacheDirectory,
             Margin = new Thickness(0, 0, 0, 8),
         };
-        _ovCacheBox.LostFocus += OvCacheBox_OnLostFocus;
+        _ovCacheBox.LostFocus += (_, _) =>
+            _plugin.OpenVinoCacheDirectory = _ovCacheBox.Text.Trim();
 
-        var hintText = new TextBlock
+        Loaded += (_, _) => RefreshFromPlugin();
+        IsVisibleChanged += (_, _) =>
         {
-            Text =
-                "NPU: encoder na NPU, decoder na CPU (stabilnejsie). GPU: encoder aj decoder cez OpenVINO GPU. " +
-                "Po zmene zariadenia znovu nacitaj model; status ukaze, ak je stale nahraty predchadzajuci device.",
-            TextWrapping = TextWrapping.Wrap,
-            Opacity = 0.75,
-            FontSize = 12,
+            if (IsVisible)
+                RefreshFromPlugin();
         };
 
         Content = new StackPanel
@@ -81,26 +99,43 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
             Children =
             {
                 title,
-                deviceHint,
+                accelerationHint,
+                _deviceStatus,
+                advancedLabel,
                 _deviceCombo,
                 pythonLabel,
                 _pythonPathBox,
                 cacheLabel,
                 _ovCacheBox,
-                hintText,
             },
         };
     }
 
     private void DeviceCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_isRefreshing)
+            return;
+
         if (_deviceCombo.SelectedItem is string device)
             _plugin.TargetDevice = device;
     }
 
-    private void PythonPathBox_OnLostFocus(object sender, RoutedEventArgs e) =>
-        _plugin.PythonExecutablePath = _pythonPathBox.Text.Trim();
-
-    private void OvCacheBox_OnLostFocus(object sender, RoutedEventArgs e) =>
-        _plugin.OpenVinoCacheDirectory = _ovCacheBox.Text.Trim();
+    private void RefreshFromPlugin()
+    {
+        _isRefreshing = true;
+        try
+        {
+            var status = _plugin.AccelerationStatus;
+            _deviceStatus.Text = string.IsNullOrWhiteSpace(status.Detail)
+                ? status.DisplayText
+                : $"{status.DisplayText}: {status.Detail}";
+            _deviceCombo.SelectedItem = _plugin.TargetDevice;
+            _pythonPathBox.Text = _plugin.PythonExecutablePath;
+            _ovCacheBox.Text = _plugin.OpenVinoCacheDirectory;
+        }
+        finally
+        {
+            _isRefreshing = false;
+        }
+    }
 }

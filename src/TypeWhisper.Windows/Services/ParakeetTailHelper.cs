@@ -6,8 +6,11 @@ internal static class ParakeetTailHelper
 {
     internal const string ParakeetModelId = "plugin:com.typewhisper.sherpa-onnx:parakeet-tdt-0.6b";
     internal const string ParakeetOpenVinoPluginId = "com.whispernpu.parakeet-openvino";
+    internal const string ParakeetOpenVinoTolkiumPluginId = "com.tolkium.parakeet-openvino";
     internal const string ParakeetOpenVinoModelId =
         "plugin:com.whispernpu.parakeet-openvino:parakeet-tdt-0.6b-v3-openvino";
+    internal const string ParakeetOpenVinoTolkiumModelId =
+        "plugin:com.tolkium.parakeet-openvino:parakeet-tdt-0.6b-v3-openvino";
     internal const int TailGuardMilliseconds = 200;
     private const int SampleRate = 16000;
 
@@ -17,8 +20,10 @@ internal static class ParakeetTailHelper
     public static bool IsParakeetModel(string? activeModelId) =>
         string.Equals(activeModelId, ParakeetModelId, StringComparison.Ordinal)
         || string.Equals(activeModelId, ParakeetOpenVinoModelId, StringComparison.Ordinal)
+        || string.Equals(activeModelId, ParakeetOpenVinoTolkiumModelId, StringComparison.Ordinal)
         || (activeModelId is not null
-            && activeModelId.StartsWith($"plugin:{ParakeetOpenVinoPluginId}:", StringComparison.Ordinal));
+            && (activeModelId.StartsWith($"plugin:{ParakeetOpenVinoPluginId}:", StringComparison.Ordinal)
+                || activeModelId.StartsWith($"plugin:{ParakeetOpenVinoTolkiumPluginId}:", StringComparison.Ordinal)));
 
     /// <summary>
     /// Creates an app triggerend tail guard.
@@ -55,6 +60,23 @@ internal static class ParakeetTailHelper
 
         if (!string.IsNullOrWhiteSpace(fullText))
         {
+            if (!string.IsNullOrWhiteSpace(partialText))
+            {
+                var merged = StreamingHandler.StabilizeRollingText(
+                    partialText,
+                    fullText,
+                    rollingTailWindow: true);
+                if (partialText.Length > fullText.Length)
+                {
+                    return new ParakeetTranscriptionSelection(
+                        merged,
+                        "merged_live_full",
+                        AreDivergent(merged, partialText),
+                        partialText.Length,
+                        fullText.Length);
+                }
+            }
+
             return new ParakeetTranscriptionSelection(
                 fullText,
                 "full_decode",

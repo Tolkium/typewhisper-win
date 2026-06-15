@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.WebSockets;
 using System.Threading.Channels;
+using TypeWhisper.Core.Audio;
 using TypeWhisper.Core.Interfaces;
 using TypeWhisper.PluginSDK;
 using TypeWhisper.Windows.ViewModels;
@@ -18,6 +19,7 @@ public sealed class StreamingHandler : IDisposable
     private readonly AudioRecordingService _audio;
     private readonly IDictionaryService _dictionary;
     private readonly StreamingTranscriptState _transcriptState = new();
+    private readonly LiveSentenceBoundaryTracker _sentenceBoundaryTracker = new();
     private readonly object _streamingAudioLock = new();
     private readonly Queue<byte[]> _pendingStreamingAudio = new();
 
@@ -63,6 +65,7 @@ public sealed class StreamingHandler : IDisposable
         ClearPendingStreamingAudio();
 
         var sessionVersion = _transcriptState.StartSession();
+        _sentenceBoundaryTracker.Reset();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
 
@@ -82,12 +85,24 @@ public sealed class StreamingHandler : IDisposable
     /// <summary>
     /// Stops the service or session.
     /// </summary>
-    public string Stop()
+    public StreamingSessionStop Stop()
     {
         _audio.SamplesAvailable -= OnStreamingSamplesAvailable;
         _cts?.Cancel();
 
+        var hints = _sentenceBoundaryTracker.GetHints();
         var finalText = _transcriptState.StopSession();
+
+        if (TranscriptTraceLog.IsEnabled)
+        {
+            TranscriptTraceLog.Write("live_stop", new
+            {
+                finalLiveText = finalText,
+                sentenceEndSampleHints = hints,
+            });
+        }
+
+        _sentenceBoundaryTracker.Reset();
 
         IStreamingSession? session;
         ChannelWriter<byte[]>? audioWriter;
@@ -118,7 +133,7 @@ public sealed class StreamingHandler : IDisposable
         _cts = null;
         _streamingTask = null;
 
-        return finalText;
+        return new StreamingSessionStop(finalText, hints);
     }
 
     private static async Task CleanupSessionAsync(IStreamingSession session)
@@ -364,7 +379,9 @@ public sealed class StreamingHandler : IDisposable
                     try
                     {
                         var lang = language == "auto" ? null : language;
-                        var result = await engine.TranscribeAsync(buffer, lang, task, ct);
+                        var pollBuffer = StreamingTranscriptState.PreparePollingBuffer(
+                            buffer, out var usedTailWindow);
+                        var result = await engine.TranscribeAsync(pollBuffer, lang, task, ct);
 
                         if (result.NoSpeechProbability is > 0.8f)
                             continue;
@@ -376,12 +393,29 @@ public sealed class StreamingHandler : IDisposable
 
                         if (!string.IsNullOrEmpty(text))
                         {
-                            if (_transcriptState.TryApplyPolling(
+                            var applied = _transcriptState.TryApplyPolling(
                                 sessionVersion,
                                 text,
                                 _dictionary.ApplyCorrections,
-                                out var stable))
+                                out var stable,
+                                usedTailWindow,
+                                buffer.Length);
+
+                            if (TranscriptTraceLog.IsEnabled)
                             {
+                                TranscriptTraceLog.Write("live_poll", new
+                                {
+                                    samples = buffer.Length,
+                                    usedTailWindow,
+                                    rawDecode = text,
+                                    applied,
+                                    stable = applied ? stable : null,
+                                });
+                            }
+
+                            if (applied)
+                            {
+                                _sentenceBoundaryTracker.TryRecord(stable, buffer.Length);
                                 OnPartialTextUpdate?.Invoke(stable);
                             }
                         }
@@ -421,48 +455,27 @@ public sealed class StreamingHandler : IDisposable
     /// </summary>
     public static string StabilizeText(string confirmed, string newText)
     {
-        newText = newText.Trim();
-        if (string.IsNullOrEmpty(confirmed)) return newText;
-        if (string.IsNullOrEmpty(newText)) return confirmed;
-
-        if (newText.StartsWith(confirmed, StringComparison.Ordinal))
-            return newText;
-
-        var matchEnd = 0;
-        var minLen = Math.Min(confirmed.Length, newText.Length);
-        for (var i = 0; i < minLen; i++)
-        {
-            if (confirmed[i] == newText[i])
-                matchEnd = i + 1;
-            else
-                break;
-        }
-
-        if (matchEnd > confirmed.Length / 2)
-        {
-            var tail = newText[matchEnd..];
-            if (tail.Length > 0 && !confirmed.EndsWith(' ') && !tail.StartsWith(' '))
-                return confirmed + " " + tail;
-            return confirmed + tail;
-        }
-
-        var minOverlap = Math.Min(20, confirmed.Length / 4);
-        var maxShift = Math.Min(confirmed.Length - minOverlap, 150);
-        if (maxShift > 0)
-        {
-            for (var dropCount = 1; dropCount <= maxShift; dropCount++)
-            {
-                var suffix = confirmed[dropCount..];
-                if (newText.StartsWith(suffix, StringComparison.Ordinal))
-                {
-                    var newTail = newText[(confirmed.Length - dropCount)..];
-                    return string.IsNullOrEmpty(newTail) ? confirmed : confirmed + newTail;
-                }
-            }
-        }
-
-        return newText;
+        return RollingTranscriptAligner.Merge(confirmed, newText);
     }
+
+    /// <summary>
+    /// Merges a rolling tail-window transcript into confirmed live text.
+    /// </summary>
+    public static string StabilizeRollingText(
+        string confirmed,
+        string windowText,
+        bool rollingTailWindow = false,
+        int frozenPrefixWordCount = 0)
+    {
+        return RollingTranscriptAligner.Merge(
+            confirmed,
+            windowText,
+            rollingTailWindow,
+            frozenPrefixWordCount);
+    }
+
+    internal static string JoinPreviewParts(string prefix, string append) =>
+        RollingTranscriptAligner.JoinParts(prefix, append);
 
     /// <summary>
     /// Releases resources held by the instance.

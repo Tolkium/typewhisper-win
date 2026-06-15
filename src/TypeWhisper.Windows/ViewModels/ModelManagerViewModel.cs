@@ -251,10 +251,18 @@ public partial class ModelManagerViewModel : ObservableObject
                 _isSyncingAccelerationSelection = false;
             }
 
-            if (_settings.Current.LocalModelAcceleration != normalized)
-                _settings.Save(_settings.Current with { LocalModelAcceleration = normalized });
-
             var plugin = GetDisplayTranscriptionPlugin();
+            if (plugin is not null && ShouldShowAccelerationSection(plugin))
+                normalized = TranscriptionAccelerationAdvisorSupport.ApplyPluginAdvisor(plugin, normalized);
+
+            if (_settings.Current.LocalModelAcceleration != normalized)
+            {
+                _settings.Save(_settings.Current with { LocalModelAcceleration = normalized });
+                _isSyncingAccelerationSelection = true;
+                SelectedAccelerationOptionValue = normalized;
+                _isSyncingAccelerationSelection = false;
+            }
+
             if (plugin is not null && ShouldShowAccelerationSection(plugin))
             {
                 plugin.SetAccelerationPreference(

@@ -14,7 +14,7 @@ namespace TypeWhisper.Windows.Controls.Overlay;
 /// </summary>
 public partial class EdgeDockIndicatorView : UserControl
 {
-    private const double MaxPartialPreviewHeight = 86;
+    private const double MaxPartialPreviewHeight = 124;
     private const double MinPartialPreviewHeight = 26;
     private const double FallbackPartialPreviewTextWidth = 560;
     private const string ShowBuiltInPartialPreviewProperty = "ShowBuiltInPartialPreview";

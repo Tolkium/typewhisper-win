@@ -30,11 +30,6 @@ internal static class LiveTranscriptionStartupPolicy
         if (plugin is null)
             return LiveTranscriptionStartupMode.None;
 
-        // Parakeet OpenVINO is a slow batch sidecar — polling partial buffers
-        // returns <pad> garbage and blocks the sidecar lock during recording.
-        if (string.Equals(plugin.ProviderId, "parakeet-openvino", StringComparison.OrdinalIgnoreCase))
-            return LiveTranscriptionStartupMode.None;
-
         if (plugin.SupportsStreaming)
             return LiveTranscriptionStartupMode.PluginStreaming;
 
