@@ -6,7 +6,7 @@ Duplicate of the baseline OpenVINO Parakeet plugin with a separate plugin ID so 
 |---|---|---|
 | Plugin ID | `com.whispernpu.parakeet-openvino` | `com.tolkium.parakeet-openvino-timeline` |
 | Version | 0.3.3 | 0.4.0-alpha |
-| Host merge | `RollingTranscriptAligner` | `TranscriptTimelineMerger` (token timeline WIP) |
+| Host merge | `RollingTranscriptAligner` | `TranscriptTokenTimeline` (committed/provisional tokens) |
 | Python sidecar | Same scripts / model cache | Same scripts / model cache |
 
 ## Build

@@ -71,8 +71,8 @@ internal static class ParakeetLongAudioTranscription
             mergedText = string.IsNullOrEmpty(mergedText)
                 ? text
                 : (useTimelineMerge
-                    ? TranscriptTimelineMerger.Merge(mergedText, text)
-                    : StreamingHandler.StabilizeRollingText(mergedText, text));
+                    ? TranscriptTimelineMerger.Merge(mergedText, text, rollingTailWindow: true)
+                    : StreamingHandler.StabilizeRollingText(mergedText, text, rollingTailWindow: true));
 
             if (TranscriptTraceLog.IsEnabled)
             {

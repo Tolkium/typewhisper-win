@@ -38,6 +38,10 @@
     </ItemGroup>
     <MakeDir Directories="$(PluginOutputDir)Scripts\" />
     <Copy SourceFiles="@(_ScriptFiles)" DestinationFolder="$(PluginOutputDir)Scripts\" />
+    <MakeDir Directories="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != ''" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != ''" />
+    <Copy SourceFiles="$(TargetDir)$(TargetName).deps.json" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != '' and Exists('$(TargetDir)$(TargetName).deps.json')" />
+    <Copy SourceFiles="$(ProjectDir)manifest.json" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != ''" />
     <MakeDir Directories="$(LocalAppPluginDir)Scripts\" Condition="'$(LOCALAPPDATA)' != ''" />
     <Copy SourceFiles="@(_ScriptFiles)" DestinationFolder="$(LocalAppPluginDir)Scripts\" Condition="'$(LOCALAPPDATA)' != ''" />
   </Target>

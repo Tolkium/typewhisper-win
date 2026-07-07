@@ -318,18 +318,24 @@ public sealed class ModelManagerService : INotifyPropertyChanged, IDisposable
     public void UnloadModel()
     {
         CancelAutoUnload();
-        if (ActiveModelId is not null)
+        if (ActiveModelId is null)
+            return;
+
+        var modelId = ActiveModelId;
+        var plugin = ActiveTranscriptionPlugin;
+        ActiveModelId = null;
+        _activeModelAccelerationPreference = null;
+
+        try
         {
-            var plugin = ActiveTranscriptionPlugin;
-            plugin?.UnloadModelAsync().ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                    System.Diagnostics.Debug.WriteLine($"UnloadModelAsync failed: {t.Exception?.Message}");
-            });
-            SetStatus(ActiveModelId, ModelStatus.NotDownloaded);
-            ActiveModelId = null;
-            _activeModelAccelerationPreference = null;
+            plugin?.UnloadModelAsync().GetAwaiter().GetResult();
         }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"UnloadModelAsync failed: {ex.Message}");
+        }
+
+        SetStatus(modelId, IsDownloadedCore(modelId) ? ModelStatus.Ready : ModelStatus.NotDownloaded);
     }
 
     /// <summary>
@@ -634,6 +640,7 @@ public sealed class ModelManagerService : INotifyPropertyChanged, IDisposable
     {
         "parakeet-tdt-0.6b" => GetPluginModelId("com.typewhisper.sherpa-onnx", "parakeet-tdt-0.6b"),
         "canary-1b-flash" or "canary-180m-flash" => GetPluginModelId("com.typewhisper.sherpa-onnx", "canary-180m-flash"),
+        ParakeetTailHelper.ParakeetOpenVinoTolkiumModelId => ParakeetPluginIds.BaselineModelId,
         _ => modelId
     };
 

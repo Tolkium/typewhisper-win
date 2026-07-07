@@ -71,7 +71,7 @@ internal static class ParakeetTailHelper
                         partialText,
                         fullText,
                         rollingTailWindow: true);
-                if (partialText.Length > fullText.Length)
+                if (ShouldPreferMergedOverFull(partialText, fullText))
                 {
                     return new ParakeetTranscriptionSelection(
                         merged,
@@ -101,6 +101,22 @@ internal static class ParakeetTailHelper
         }
 
         return new ParakeetTranscriptionSelection("", "empty", false, 0, 0);
+    }
+
+    private static bool ShouldPreferMergedOverFull(string partialText, string fullText)
+    {
+        if (partialText.Length > fullText.Length)
+            return true;
+
+        if (!AreDivergent(fullText, partialText))
+            return false;
+
+        var partialWords = partialText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (partialWords.Length < 4)
+            return false;
+
+        var partialPrefix = Normalize(string.Join(' ', partialWords.Take(4)));
+        return !Normalize(fullText).Contains(partialPrefix, StringComparison.Ordinal);
     }
 
     internal static bool AreDivergent(string fullText, string partialText)

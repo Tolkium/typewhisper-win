@@ -1,8 +1,7 @@
 namespace TypeWhisper.Windows.Services;
 
 /// <summary>
-/// Merge pipeline for the timeline plugin variant. Currently delegates to the fuzzy aligner
-/// while the committed/provisional token timeline is implemented on this branch.
+/// Merge pipeline for the timeline plugin variant using committed/provisional tokens.
 /// </summary>
 internal static class TranscriptTimelineMerger
 {
@@ -11,7 +10,7 @@ internal static class TranscriptTimelineMerger
         string windowText,
         bool rollingTailWindow = false,
         int frozenPrefixWordCount = 0) =>
-        RollingTranscriptAligner.Merge(
+        new TranscriptTokenTimeline().Merge(
             confirmed,
             windowText,
             rollingTailWindow,

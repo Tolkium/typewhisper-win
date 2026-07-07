@@ -259,10 +259,11 @@ public sealed class ParakeetOpenVinoTimelinePlugin : ITypeWhisperPlugin, ITransc
         EnsurePythonExists();
         await VerifyPythonRuntimeAsync(ct);
         await _sidecarLock.WaitAsync(ct);
+        var loadSucceeded = false;
         try
         {
             StopSidecar();
-            KillOrphanSidecars();
+            KillOwnOrphanSidecars();
             StartSidecar();
 
             using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -295,6 +296,7 @@ public sealed class ParakeetOpenVinoTimelinePlugin : ITypeWhisperPlugin, ITransc
             Log(
                 PluginLogLevel.Info,
                 $"Parakeet loaded on {_loadedDevice} backend='{_activeBackend ?? "unknown"}' in {loadWatch.Elapsed.TotalSeconds:F1}s");
+            loadSucceeded = true;
         }
         catch (Exception ex)
         {
@@ -303,6 +305,8 @@ public sealed class ParakeetOpenVinoTimelinePlugin : ITypeWhisperPlugin, ITransc
         }
         finally
         {
+            if (!loadSucceeded)
+                StopSidecar();
             _sidecarLock.Release();
         }
     }
@@ -538,10 +542,17 @@ public sealed class ParakeetOpenVinoTimelinePlugin : ITypeWhisperPlugin, ITransc
             wrapper[prop.Name] = prop.Value;
         wrapper["req_id"] = reqId;
         var commandName = wrapper.TryGetValue("cmd", out var cmd) ? cmd?.ToString() : "unknown";
-        Log(PluginLogLevel.Info, $"sidecar request #{reqId}: {commandName}");
-
         var requestJson = JsonSerializer.Serialize(wrapper);
-        Log(PluginLogLevel.Info, $"sidecar request #{reqId} json: {requestJson}");
+        if (wrapper.TryGetValue("audio_base64", out var audioValue) && audioValue is string audioBase64)
+        {
+            Log(
+                PluginLogLevel.Info,
+                $"sidecar request #{reqId}: {commandName}, audio_base64_chars={audioBase64.Length}");
+        }
+        else
+        {
+            Log(PluginLogLevel.Info, $"sidecar request #{reqId} json: {requestJson}");
+        }
         await _sidecarIn.WriteLineAsync(requestJson.AsMemory(), ct);
         await _sidecarIn.FlushAsync(ct);
 
@@ -614,14 +625,16 @@ public sealed class ParakeetOpenVinoTimelinePlugin : ITypeWhisperPlugin, ITransc
         }
     }
 
-    private static void KillOrphanSidecars()
+    private void KillOwnOrphanSidecars()
     {
         try
         {
+            var dataDirMarker = GetDataDirectory().Replace("'", "''");
             var psi = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = "-NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"Name='python.exe'\\\" | Where-Object { $_.CommandLine -like '*parakeet_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\"",
+                Arguments =
+                    $"-NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"Name='python.exe'\\\" | Where-Object {{ $_.CommandLine -like '*parakeet_server.py*' -and $_.CommandLine -like '*{dataDirMarker}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
@@ -630,7 +643,7 @@ public sealed class ParakeetOpenVinoTimelinePlugin : ITypeWhisperPlugin, ITransc
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[ParakeetOV] KillOrphanSidecars: {ex.Message}");
+            Debug.WriteLine($"[ParakeetOV] KillOwnOrphanSidecars: {ex.Message}");
         }
     }
 

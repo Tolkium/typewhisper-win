@@ -22,6 +22,7 @@ internal sealed class StreamingTranscriptState
     private const int MinRevisableTailWords = 12;
 
     private TranscriptMergeMode _mergeMode = TranscriptMergeMode.BaselineAligner;
+    private TranscriptTokenTimeline? _tokenTimeline;
 
     /// <summary>
     /// Gets the most recent text shown in the live preview.
@@ -34,6 +35,9 @@ internal sealed class StreamingTranscriptState
     public int StartSession(TranscriptMergeMode mergeMode = TranscriptMergeMode.BaselineAligner)
     {
         _mergeMode = mergeMode;
+        _tokenTimeline = mergeMode == TranscriptMergeMode.Timeline
+            ? new TranscriptTokenTimeline()
+            : null;
         _confirmedText = "";
         _lastDisplayedText = "";
         _lastFinalSegment = "";
@@ -51,6 +55,7 @@ internal sealed class StreamingTranscriptState
             ? _lastDisplayedText
             : _confirmedText;
         InvalidateSession();
+        _tokenTimeline = null;
         _confirmedText = "";
         _lastDisplayedText = "";
         _lastFinalSegment = "";
@@ -68,7 +73,11 @@ internal sealed class StreamingTranscriptState
     /// <summary>
     /// Invalidates in-flight transcript updates from older sessions.
     /// </summary>
-    public void InvalidateSession() => Interlocked.Increment(ref _sessionVersion);
+    public void InvalidateSession()
+    {
+        Interlocked.Increment(ref _sessionVersion);
+        _tokenTimeline?.Reset();
+    }
 
     /// <summary>
     /// Applies a real-time transcript update and returns false for stale or empty updates.
@@ -161,15 +170,29 @@ internal sealed class StreamingTranscriptState
         return true;
     }
 
-    private string MergeRolling(string confirmed, string windowText, bool rollingTailWindow) =>
-        _mergeMode == TranscriptMergeMode.Timeline
-            ? TranscriptTimelineMerger.Merge(confirmed, windowText, rollingTailWindow)
-            : StreamingHandler.StabilizeRollingText(confirmed, windowText, rollingTailWindow);
+    private string MergeRolling(string confirmed, string windowText, bool rollingTailWindow)
+    {
+        if (_mergeMode != TranscriptMergeMode.Timeline)
+            return StreamingHandler.StabilizeRollingText(confirmed, windowText, rollingTailWindow);
 
-    private string MergeNonRolling(string confirmed, string windowText) =>
-        _mergeMode == TranscriptMergeMode.Timeline
-            ? TranscriptTimelineMerger.Merge(confirmed, windowText)
-            : StreamingHandler.StabilizeText(confirmed, windowText);
+        _tokenTimeline ??= new TranscriptTokenTimeline();
+        if (_tokenTimeline.TokenCount == 0 && !string.IsNullOrWhiteSpace(confirmed))
+            _tokenTimeline.ImportConfirmed(confirmed, committedPrefixCount: 0, commitThreshold: 2);
+
+        return _tokenTimeline.MergeWindow(windowText, rollingTailWindow);
+    }
+
+    private string MergeNonRolling(string confirmed, string windowText)
+    {
+        if (_mergeMode != TranscriptMergeMode.Timeline)
+            return StreamingHandler.StabilizeText(confirmed, windowText);
+
+        _tokenTimeline ??= new TranscriptTokenTimeline();
+        if (_tokenTimeline.TokenCount == 0 && !string.IsNullOrWhiteSpace(confirmed))
+            _tokenTimeline.ImportConfirmed(confirmed, committedPrefixCount: 0, commitThreshold: 1);
+
+        return _tokenTimeline.MergeWindow(windowText, rollingTailWindow: false);
+    }
 
     private void TryGrowImmutablePrefix(int totalSamplesRecorded, int windowWordCount)
     {

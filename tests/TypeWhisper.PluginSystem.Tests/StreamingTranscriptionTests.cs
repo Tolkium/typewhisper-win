@@ -858,6 +858,120 @@ public class StabilizeRollingTextTests
         Assert.Contains("síce veci", result);
         Assert.DoesNotContain("reálny respektive zobudil", result, StringComparison.OrdinalIgnoreCase);
     }
+}
+
+public class TranscriptTimelineMergerTests
+{
+    [Fact]
+    public void EmptyConfirmed_ReturnsWindowTokens()
+    {
+        var result = TranscriptTimelineMerger.Merge("", "new tail words");
+        Assert.Equal("new tail words", result);
+    }
+
+    [Fact]
+    public void RollingTail_WordOverlap_DoesNotDuplicateMiddle()
+    {
+        var confirmed = "No takže skúsimme budem hovoriť nejakú dlhšiu vetu";
+        var window = "budem hovoriť nejakú dlhšiu vetu a uprostred tej vety budem zastavovať";
+
+        var result = TranscriptTimelineMerger.Merge(confirmed, window, rollingTailWindow: true);
+
+        Assert.Equal(
+            "No takže skúsimme budem hovoriť nejakú dlhšiu vetu a uprostred tej vety budem zastavovať",
+            result);
+    }
+
+    [Fact]
+    public void RollingTail_RepeatedWindow_DoesNotGrowAfterCommit()
+    {
+        var confirmed = "Alpha beta gamma delta epsilon";
+        var window = "gamma delta epsilon zeta eta";
+
+        var timeline = new TranscriptTokenTimeline();
+        timeline.ImportConfirmed(confirmed, committedPrefixCount: 0, commitThreshold: 2);
+        var once = timeline.MergeWindow(window, rollingTailWindow: true);
+        var twice = timeline.MergeWindow(window, rollingTailWindow: true);
+
+        Assert.Equal("Alpha beta gamma delta epsilon zeta eta", once);
+        Assert.Equal(once, twice);
+    }
+
+    [Fact]
+    public void RollingTail_ModelRestartFromEarlierText_DoesNotDuplicateBeginning()
+    {
+        var confirmed = "Zúsim hovoriť nejakú vetu respektíve vytvoriť konverzáciu. " +
+            "Začnem tým že nejakú tú vetu poviem znova a uvidíme či to nespôsobí problém. " +
+            "Budeme hovoriť o tom ako sa mi podarilo mať sen.";
+        var restartedWindow = "Zúsim hovoriť nejakú vetu respektíve vytvoriť konverzáciu. " +
+            "Začnem tým že nejakú tú vetu poviem znova a uvidíme či to nespôsobí problém.";
+
+        var result = TranscriptTimelineMerger.Merge(
+            confirmed,
+            restartedWindow,
+            rollingTailWindow: true);
+
+        Assert.Equal(confirmed, result);
+    }
+
+    [Fact]
+    public void TimelineSession_UsesStatefulTokenTimelineAcrossPolls()
+    {
+        var sut = new StreamingTranscriptState();
+        var sessionVersion = sut.StartSession(TranscriptMergeMode.Timeline);
+
+        Assert.True(sut.TryApplyPolling(
+            sessionVersion,
+            "Hello world",
+            text => text,
+            out var firstDisplay));
+        Assert.True(sut.TryApplyPolling(
+            sessionVersion,
+            "Hello world, how are you?",
+            text => text,
+            out var secondDisplay));
+
+        Assert.Equal("Hello world", firstDisplay);
+        Assert.Equal("Hello world, how are you?", secondDisplay);
+    }
+
+    [Fact]
+    public void TimelineSession_CommitsPrefixDuringRollingWindow()
+    {
+        var sut = new StreamingTranscriptState();
+        var sessionVersion = sut.StartSession(TranscriptMergeMode.Timeline);
+        var samples = StreamingTranscriptState.MaxPollingSamples + (16 * 16000);
+
+        Assert.True(sut.TryApplyPolling(
+            sessionVersion,
+            "Dobre zaciatok o 3D tlaci a Pruse i3 sliceri.",
+            text => text,
+            out _,
+            rollingWindow: false,
+            totalSamplesRecorded: samples));
+
+        Assert.True(sut.TryApplyPolling(
+            sessionVersion,
+            "o 3D tlaci a Pruse i3 sliceri. Pokracujem v dlhom texte.",
+            text => text,
+            out _,
+            rollingWindow: true,
+            totalSamplesRecorded: samples));
+
+        samples += 48000;
+        sut.TryApplyPolling(
+            sessionVersion,
+            "uplne iny tail bez 3d zmienky",
+            text => text,
+            out _,
+            rollingWindow: true,
+            totalSamplesRecorded: samples);
+
+        var finalText = sut.StopSession();
+
+        Assert.Contains("Dobre zaciatok", finalText, StringComparison.Ordinal);
+        Assert.Contains("Pruse", finalText, StringComparison.OrdinalIgnoreCase);
+    }
 
     [Fact]
     public void PreparePollingBuffer_UsesTailWhenTooLong()
