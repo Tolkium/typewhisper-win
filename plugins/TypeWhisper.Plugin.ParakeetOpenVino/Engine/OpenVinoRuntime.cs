@@ -179,5 +179,39 @@ internal sealed unsafe class OvInferRequest(nint handle) : IDisposable
         }
     }
 
+    /// <summary>Returns the request's own tensor for <paramref name="name"/> (input or output).</summary>
+    public OvTensor GetTensor(string name)
+    {
+        nint tensor;
+        Check(InferRequestGetTensor(Handle, name, &tensor), $"ov_infer_request_get_tensor({name})");
+        return new OvTensor(tensor);
+    }
+
     public void Dispose() => InferRequestFree(Handle);
+}
+
+/// <summary>Borrowed view of a tensor owned by an infer request.</summary>
+internal sealed unsafe class OvTensor(nint handle) : IDisposable
+{
+    public nint Handle { get; } = handle;
+
+    public T* Data<T>() where T : unmanaged
+    {
+        void* data;
+        Check(TensorData(Handle, &data), "ov_tensor_data");
+        return (T*)data;
+    }
+
+    public long[] Shape()
+    {
+        OpenVinoNative.Shape shape;
+        Check(TensorGetShape(Handle, &shape), "ov_tensor_get_shape");
+        var dims = new long[shape.Rank];
+        for (var i = 0; i < shape.Rank; i++)
+            dims[i] = shape.Dims[i];
+        ShapeFree(&shape);
+        return dims;
+    }
+
+    public void Dispose() => TensorFree(Handle);
 }
