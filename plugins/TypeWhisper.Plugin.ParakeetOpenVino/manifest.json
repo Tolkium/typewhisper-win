@@ -1,10 +1,10 @@
 {
   "id": "com.whispernpu.parakeet-openvino",
   "name": "Parakeet OpenVINO (Intel GPU/NPU)",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "minHostVersion": "0.8.4",
   "author": "Tolkium",
-  "description": "Local Parakeet TDT 0.6B v3 via OpenVINO on Intel integrated GPUs (Arc / Iris Xe) or NPU (first 20 s per recording), with CPU fallback.",
+  "description": "Local Parakeet TDT 0.6B v3 via OpenVINO on Intel integrated GPUs (Arc / Iris Xe) or NPU (first 20 s per recording), with CPU fallback. No Python required.",
   "assemblyName": "TypeWhisper.Plugin.ParakeetOpenVino.dll",
   "pluginClass": "TypeWhisper.Plugin.ParakeetOpenVino.ParakeetOpenVinoPlugin",
   "category": "transcription",

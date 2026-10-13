@@ -9,12 +9,12 @@ namespace TypeWhisper.Plugin.ParakeetOpenVino;
 /// </summary>
 public static class ParakeetOpenVinoAcceleration
 {
-    public const string GpuDisplayText = "OpenVINO Intel GPU encoder + decoder";
+    public const string GpuDisplayText = "OpenVINO Intel GPU encoder + CPU decoder";
     public const string NpuDisplayText = "OpenVINO Intel NPU encoder + CPU decoder";
-    public const string CpuDisplayText = "OpenVINO CPU INT8";
+    public const string CpuDisplayText = "OpenVINO CPU";
 
-    /// <summary>Known v1 limit: NPU transcribes only the first 20 s of a recording (the sidecar's largest encoder bucket).</summary>
-    public const int NpuMaxAudioSeconds = 20;
+    /// <summary>Known limit: NPU transcribes only the first 20 s of a recording (the fixed NPU encoder window).</summary>
+    public const int NpuMaxAudioSeconds = Engine.ParakeetOpenVinoEngine.NpuMaxSeconds;
 
     public const string NpuLimitDetail =
         "NPU transcribes only the first 20 s of each recording. Use GPU for longer dictation.";

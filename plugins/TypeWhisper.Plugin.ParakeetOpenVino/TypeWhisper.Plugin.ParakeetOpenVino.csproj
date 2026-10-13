@@ -22,30 +22,23 @@
     <Content Include="manifest.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="Scripts\**\*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
   </ItemGroup>
+  <!-- Copies the plugin next to the locally built app. Pass -p:InstallPlugin=true to also install
+       it into %LOCALAPPDATA%\TypeWhisper\Plugins (the running TypeWhisper's plugin folder). -->
   <Target Name="CopyToAppPlugins" AfterTargets="Build">
     <PropertyGroup>
       <AppOutputDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\src\TypeWhisper.Windows\bin\$(Configuration)\$(TargetFramework)'))</AppOutputDir>
       <PluginOutputDir>$(AppOutputDir)\Plugins\com.whispernpu.parakeet-openvino\</PluginOutputDir>
       <LocalAppPluginDir>$(LOCALAPPDATA)\TypeWhisper\Plugins\com.whispernpu.parakeet-openvino\</LocalAppPluginDir>
+      <InstallPluginLocally Condition="'$(InstallPlugin)' == 'true' and '$(LOCALAPPDATA)' != ''">true</InstallPluginLocally>
     </PropertyGroup>
-    <MakeDir Directories="$(PluginOutputDir)" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PluginOutputDir)" />
-    <Copy SourceFiles="$(TargetDir)$(TargetName).deps.json" DestinationFolder="$(PluginOutputDir)" Condition="Exists('$(TargetDir)$(TargetName).deps.json')" />
-    <Copy SourceFiles="$(ProjectDir)manifest.json" DestinationFolder="$(PluginOutputDir)" />
     <ItemGroup>
-      <_ScriptFiles Include="$(ProjectDir)Scripts\**\*" />
+      <_PluginFiles Include="$(TargetPath);$(ProjectDir)manifest.json" />
+      <_PluginFiles Include="$(TargetDir)$(TargetName).deps.json" Condition="Exists('$(TargetDir)$(TargetName).deps.json')" />
     </ItemGroup>
-    <MakeDir Directories="$(PluginOutputDir)Scripts\" />
-    <Copy SourceFiles="@(_ScriptFiles)" DestinationFolder="$(PluginOutputDir)Scripts\" />
-    <MakeDir Directories="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != ''" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != ''" />
-    <Copy SourceFiles="$(TargetDir)$(TargetName).deps.json" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != '' and Exists('$(TargetDir)$(TargetName).deps.json')" />
-    <Copy SourceFiles="$(ProjectDir)manifest.json" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(LOCALAPPDATA)' != ''" />
-    <MakeDir Directories="$(LocalAppPluginDir)Scripts\" Condition="'$(LOCALAPPDATA)' != ''" />
-    <Copy SourceFiles="@(_ScriptFiles)" DestinationFolder="$(LocalAppPluginDir)Scripts\" Condition="'$(LOCALAPPDATA)' != ''" />
+    <MakeDir Directories="$(PluginOutputDir)" />
+    <Copy SourceFiles="@(_PluginFiles)" DestinationFolder="$(PluginOutputDir)" />
+    <MakeDir Directories="$(LocalAppPluginDir)" Condition="'$(InstallPluginLocally)' == 'true'" />
+    <Copy SourceFiles="@(_PluginFiles)" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(InstallPluginLocally)' == 'true'" />
   </Target>
 </Project>

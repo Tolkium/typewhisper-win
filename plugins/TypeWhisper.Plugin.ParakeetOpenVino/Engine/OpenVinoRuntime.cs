@@ -13,6 +13,9 @@ internal static unsafe class OpenVinoLoader
     /// <summary>Loads openvino_c.dll from <paramref name="libraryDirectory"/> and routes DllImports to it.</summary>
     public static void Load(string libraryDirectory)
     {
+        if (_handle != nint.Zero)
+            return; // the resolver can only be registered once per assembly
+
         var path = Path.Combine(libraryDirectory, "openvino_c.dll");
         if (!File.Exists(path))
             throw new FileNotFoundException("openvino_c.dll not found", path);
