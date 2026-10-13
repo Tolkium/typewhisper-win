@@ -74,6 +74,17 @@ public class ParakeetOpenVinoPluginTests
     }
 
     [Fact]
+    public void MaxRecordingDuration_OnlyLimitsNpu()
+    {
+        var sut = new ParakeetOpenVinoPlugin { PreferredDevice = "NPU" };
+        Assert.Equal(TimeSpan.FromSeconds(19.7), sut.MaxRecordingDuration);
+        Assert.Contains("20 s", sut.MaxRecordingDurationReason);
+
+        sut.PreferredDevice = "GPU";
+        Assert.Null(sut.MaxRecordingDuration);
+    }
+
+    [Fact]
     public void DeviceOptions_OfferGpuNpuAndCpu()
     {
         Assert.Equal(["GPU", "NPU", "CPU"], ParakeetOpenVinoPlugin.DeviceOptions);
