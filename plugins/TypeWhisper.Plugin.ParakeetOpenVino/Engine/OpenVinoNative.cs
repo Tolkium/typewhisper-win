@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace OpenVinoSpike;
+namespace TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 
 /// <summary>
 /// P/Invoke declarations for the OpenVINO C API (openvino_c.dll), checked against the

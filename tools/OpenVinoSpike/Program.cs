@@ -1,12 +1,18 @@
 using System.Diagnostics;
 using System.Text.Json;
-using OpenVinoSpike;
-using static OpenVinoSpike.OpenVinoNative;
+using TypeWhisper.Plugin.ParakeetOpenVino.Engine;
+using static TypeWhisper.Plugin.ParakeetOpenVino.Engine.OpenVinoNative;
 
 // Phase 1 of docs/plans/native-openvino-engine.md: run the Parakeet encoder through the
 // OpenVINO C API and compare with the Phase 0 reference encoder outputs.
 //
 // Usage: OpenVinoSpike <openvino libs dir> <model weights dir> <reference dir> [devices] [cache dir]
+
+// Modes for later phases: "features <reference>" (phase 2), "decoder <weights> <reference> <ov-libs>" (phase 3).
+if (args.Length > 0 && args[0] == "features")
+    return Checks.Features(args[1]);
+if (args.Length > 0 && args[0] == "decoder")
+    return Checks.Decoder(args[1], args[2], args[3]);
 
 if (args.Length < 3)
 {
@@ -58,7 +64,7 @@ foreach (var device in devices)
             continue;
 
         // Reference features for this device's input (NPU input is cut to the first 20 s).
-        var features = ReadFloats(Path.Combine(clipDir, "features.bin"));
+        var features = Checks.ReadFloats(Path.Combine(clipDir, "features.bin"));
         var featureShape = root.GetProperty("features").GetProperty("shape");
         var frames = featureShape[1].GetInt32();
         var featuresLen = root.GetProperty("features_len").GetInt64();
@@ -100,7 +106,7 @@ foreach (var device in devices)
         var inferSeconds = watch.Elapsed.TotalSeconds;
 
         // Reference is [T', 1024]; ours is [1, 1024, T].
-        var expected = ReadFloats(Path.Combine(clipDir, $"encoder_{referenceKey}.bin"));
+        var expected = Checks.ReadFloats(Path.Combine(clipDir, $"encoder_{referenceKey}.bin"));
         var refLen = root.GetProperty($"encoder_len_{referenceKey}").GetInt64();
         var tOut = (int)outShape[2];
         double maxDiff = 0;
@@ -119,10 +125,3 @@ foreach (var device in devices)
 
 return failed ? 1 : 0;
 
-static float[] ReadFloats(string path)
-{
-    var bytes = File.ReadAllBytes(path);
-    var result = new float[bytes.Length / 4];
-    Buffer.BlockCopy(bytes, 0, result, 0, bytes.Length);
-    return result;
-}

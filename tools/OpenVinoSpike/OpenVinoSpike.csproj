@@ -11,4 +11,10 @@
     <SelfContained>false</SelfContained>
   </PropertyGroup>
 
+  <!-- The engine lives in the plugin; the spike compiles the same source files. -->
+  <ItemGroup>
+    <Compile Include="..\..\plugins\TypeWhisper.Plugin.ParakeetOpenVino\Engine\**\*.cs" Link="Engine\%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\plugins\TypeWhisper.Plugin.ParakeetOpenVino\Engine\**\*.bin" Link="Engine\%(RecursiveDir)%(Filename)%(Extension)" LogicalName="%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

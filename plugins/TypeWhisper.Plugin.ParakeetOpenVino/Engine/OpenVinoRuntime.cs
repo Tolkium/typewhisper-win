@@ -1,8 +1,9 @@
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using static OpenVinoSpike.OpenVinoNative;
+using static TypeWhisper.Plugin.ParakeetOpenVino.Engine.OpenVinoNative;
 
-namespace OpenVinoSpike;
+namespace TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 
 /// <summary>Thin owning wrappers over the OpenVINO C handles used by the spike.</summary>
 internal static unsafe class OpenVinoLoader
