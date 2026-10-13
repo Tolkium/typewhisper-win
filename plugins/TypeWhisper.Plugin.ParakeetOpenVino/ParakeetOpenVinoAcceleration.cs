@@ -5,19 +5,12 @@ namespace TypeWhisper.Plugin.ParakeetOpenVino;
 /// <summary>
 /// Maps TypeWhisper host acceleration preferences to OpenVINO NPU/GPU/CPU devices.
 /// The host has no Intel option, so Auto and GPU vendor selections use the device
-/// chosen in plugin settings (default: Intel GPU).
+/// chosen in plugin settings (default: Intel GPU). Texts come from Localization/*.json.
 /// </summary>
-public static class ParakeetOpenVinoAcceleration
+internal static class ParakeetOpenVinoAcceleration
 {
-    public const string GpuDisplayText = "OpenVINO Intel GPU encoder + decoder";
-    public const string NpuDisplayText = "OpenVINO Intel NPU encoder + CPU decoder";
-    public const string CpuDisplayText = "OpenVINO CPU INT8";
-
-    /// <summary>Known v1 limit: NPU transcribes only the first 20 s of a recording (the sidecar's largest encoder bucket).</summary>
-    public const int NpuMaxAudioSeconds = 20;
-
-    public const string NpuLimitDetail =
-        "NPU transcribes only the first 20 s of each recording. Use GPU for longer dictation.";
+    /// <summary>Known limit: NPU transcribes only the first 20 s of a recording (the fixed NPU encoder window).</summary>
+    public const int NpuMaxAudioSeconds = Engine.ParakeetOpenVinoEngine.NpuMaxSeconds;
 
     public sealed record Resolution(
         string TargetDevice,
@@ -25,69 +18,55 @@ public static class ParakeetOpenVinoAcceleration
         string DisplayText,
         string? Detail);
 
-    public static Resolution Resolve(TranscriptionAccelerationPreference preference, string preferredDevice) =>
+    public static Resolution Resolve(
+        TranscriptionAccelerationPreference preference, string preferredDevice, PluginText text) =>
         preference switch
         {
-            TranscriptionAccelerationPreference.Cpu => ForDevice("CPU", null),
-            TranscriptionAccelerationPreference.NvidiaCuda => ForDevice(
-                preferredDevice,
-                $"NVIDIA CUDA is not supported by this engine. Using Intel {preferredDevice} via OpenVINO."),
-            TranscriptionAccelerationPreference.AmdVulkan => ForDevice(
-                preferredDevice,
-                $"AMD Vulkan is not supported by this engine. Using Intel {preferredDevice} via OpenVINO."),
-            TranscriptionAccelerationPreference.AmdRocm => ForDevice(
-                preferredDevice,
-                $"AMD ROCm is not supported by this engine. Using Intel {preferredDevice} via OpenVINO."),
-            _ => ForDevice(preferredDevice, null),
+            TranscriptionAccelerationPreference.Cpu => ForDevice("CPU", null, text),
+            TranscriptionAccelerationPreference.NvidiaCuda =>
+                ForDevice(preferredDevice, text.Get("Status.UnsupportedNvidiaCuda", preferredDevice), text),
+            TranscriptionAccelerationPreference.AmdVulkan =>
+                ForDevice(preferredDevice, text.Get("Status.UnsupportedAmdVulkan", preferredDevice), text),
+            TranscriptionAccelerationPreference.AmdRocm =>
+                ForDevice(preferredDevice, text.Get("Status.UnsupportedAmdRocm", preferredDevice), text),
+            _ => ForDevice(preferredDevice, null, text),
         };
 
-    public static Resolution ForDevice(string device, string? detail) =>
-        device switch
+    private static Resolution ForDevice(string device, string? detail, PluginText text)
+    {
+        switch (device)
         {
-            "CPU" => new("CPU", TranscriptionAccelerationBackend.Cpu, CpuDisplayText, detail),
-            "NPU" => new(
-                "NPU",
-                TranscriptionAccelerationBackend.Cpu,
-                NpuDisplayText,
-                detail is null ? NpuLimitDetail : $"{detail} {NpuLimitDetail}"),
-            // The SDK has no Intel GPU backend value; NvidiaCuda is the host's generic "GPU active" marker.
-            _ => new("GPU", TranscriptionAccelerationBackend.NvidiaCuda, GpuDisplayText, detail),
-        };
+            case "CPU":
+                return new("CPU", TranscriptionAccelerationBackend.Cpu, text.Get("Status.Cpu"), detail);
+            case "NPU":
+                var limit = text.Get("Status.NpuLimit", NpuMaxAudioSeconds);
+                return new(
+                    "NPU",
+                    TranscriptionAccelerationBackend.Cpu,
+                    text.Get("Status.Npu"),
+                    detail is null ? limit : $"{detail} {limit}");
+            default:
+                // The SDK has no Intel GPU backend value; NvidiaCuda is the host's generic "GPU active" marker.
+                return new("GPU", TranscriptionAccelerationBackend.NvidiaCuda, text.Get("Status.Gpu"), detail);
+        }
+    }
 
     public static TranscriptionAccelerationStatus ToStatus(
         Resolution resolution,
         string? loadedDevice,
-        string? activeBackend)
+        string? activeBackend,
+        PluginText text)
     {
-        var needsReload = loadedDevice is not null
-            && !string.Equals(loadedDevice, resolution.TargetDevice, StringComparison.OrdinalIgnoreCase);
-
-        if (needsReload)
+        if (loadedDevice is not null
+            && !string.Equals(loadedDevice, resolution.TargetDevice, StringComparison.OrdinalIgnoreCase))
         {
-            return CreateReloadRequiredStatus(
-                loadedDevice!,
-                resolution.TargetDevice,
-                resolution.DisplayText);
+            return new TranscriptionAccelerationStatus(
+                TranscriptionAccelerationBackend.Cpu,
+                resolution.DisplayText,
+                text.Get("Status.ReloadRequired", loadedDevice, resolution.TargetDevice));
         }
 
-        var detail = resolution.Detail;
-        if (!string.IsNullOrWhiteSpace(activeBackend) && string.IsNullOrWhiteSpace(detail))
-            detail = activeBackend;
-
-        return new TranscriptionAccelerationStatus(
-            resolution.ActiveBackend,
-            resolution.DisplayText,
-            detail,
-            needsReload);
+        var detail = string.IsNullOrWhiteSpace(resolution.Detail) ? activeBackend : resolution.Detail;
+        return new TranscriptionAccelerationStatus(resolution.ActiveBackend, resolution.DisplayText, detail);
     }
-
-    public static TranscriptionAccelerationStatus CreateReloadRequiredStatus(
-        string loadedDevice,
-        string targetDevice,
-        string displayText) =>
-        new(
-            TranscriptionAccelerationBackend.Cpu,
-            displayText,
-            $"Loaded on {loadedDevice}; selection maps to {targetDevice}. Reload the model to apply.",
-            RequiresRestart: false);
 }

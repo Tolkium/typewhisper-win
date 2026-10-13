@@ -123,6 +123,22 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
     private bool _isRecording;
     private bool _isStoppingRecording;
     private int _pendingJobCount;
+    private const int DurationTimerIntervalMilliseconds = 100;
+    private const int RecordingLimitFeedbackMilliseconds = 6000;
+
+    /// <summary>Allowance for the UI dispatcher to start the stop after the timer detects the limit.</summary>
+    private static readonly TimeSpan RecordingLimitDispatcherSlack = TimeSpan.FromMilliseconds(150);
+
+    /// <summary>
+    /// Audio added after an engine's recording limit is detected: up to one duration-timer tick, the
+    /// capture drain, the silent tail pad, and slack for the UI dispatcher. Stopping this much earlier
+    /// keeps the transcribed buffer inside the engine's limit.
+    /// </summary>
+    private static readonly TimeSpan RecordingLimitStopMargin =
+        TimeSpan.FromMilliseconds(DurationTimerIntervalMilliseconds)
+        + AudioRecordingService.StopDrainDuration
+        + TimeSpan.FromSeconds(DictationShortSpeechPolicy.TailPaddingSeconds)
+        + RecordingLimitDispatcherSlack;
     private const int MaxTrackedApiDictationSessions = 50;
     private const string ExternalLiveTranscriptPluginId = "com.typewhisper.live-transcript";
     private static readonly IReadOnlyList<TimeSpan> TargetAppCorrectionBaselineRetryDelays =
@@ -283,22 +299,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
             RefreshPartialPreviewPresentation();
         };
         _hotkey.DictationStartRequested += (_, _) => Application.Current?.Dispatcher.InvokeAsync(async () => await StartRecording());
-        _hotkey.DictationStopRequested += (_, _) => Application.Current?.Dispatcher.InvokeAsync(async () =>
-        {
-            try
-            {
-                await StopRecording();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"StopRecording error: {ex}");
-                _isRecording = false;
-                StopActiveRecordingInfrastructure();
-                ApplyTransientIdleFeedback(
-                    Loc.Instance.GetString("Status.ErrorFormat", ex.Message),
-                    feedbackIsError: true);
-            }
-        });
+        _hotkey.DictationStopRequested += (_, _) => Application.Current?.Dispatcher.InvokeAsync(StopRecordingOrRecoverAsync);
 
         _hotkey.CancelRequested += (_, _) => Application.Current?.Dispatcher.InvokeAsync(async () =>
             await AbortActiveOperation());
@@ -749,10 +750,10 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
         });
     }
 
-    private void ShowTransientFeedback(string text, bool isError)
+    private void ShowTransientFeedback(string text, bool isError, int autoHideMilliseconds = 2000)
     {
         ClearFeedbackAction();
-        _feedbackAutoHideMilliseconds = 2000;
+        _feedbackAutoHideMilliseconds = autoHideMilliseconds;
         FeedbackText = text;
         FeedbackIsError = isError;
 
@@ -1033,15 +1034,89 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
         RecordingSeconds = 0;
         _hotkey.IsCancelShortcutEnabled = ShouldEnableCancelShortcut(_isRecording, _pendingJobCount);
 
+        // Engines with a fixed input window (e.g. a static-shape NPU model) declare a maximum length.
+        var recordingLimit = ReadRecordingLimit(_modelManager.ActiveTranscriptionPlugin);
+        var limitStopRequested = 0;
+
         _durationTimer?.Dispose();
-        _durationTimer = new System.Timers.Timer(100);
+        _durationTimer = new System.Timers.Timer(DurationTimerIntervalMilliseconds);
         _durationTimer.Elapsed += (_, _) =>
         {
-            RecordingSeconds = _audio.RecordingDuration.TotalSeconds;
+            var duration = _audio.RecordingDuration;
+            RecordingSeconds = duration.TotalSeconds;
             if (_hotkey.CurrentMode is { } mode && mode != CurrentHotkeyMode)
                 CurrentHotkeyMode = mode;
+
+            if (recordingLimit is { } limit
+                && duration >= limit.StopAt
+                && Interlocked.Exchange(ref limitStopRequested, 1) == 0)
+            {
+                Application.Current?.Dispatcher.InvokeAsync(() => StopRecordingAtLimitAsync(limit.Message));
+            }
         };
         _durationTimer.Start();
+    }
+
+    /// <summary>
+    /// Reads the active engine's maximum recording length as the duration at which to stop and the
+    /// message to show. Plugin getters are third-party code: a failure or non-positive value means no limit.
+    /// </summary>
+    private static (TimeSpan StopAt, string Message)? ReadRecordingLimit(ITranscriptionEnginePlugin? plugin)
+    {
+        if (plugin is null)
+            return null;
+
+        TimeSpan max;
+        string? reason;
+        try
+        {
+            if (plugin.MaxRecordingDuration is not { } declared || declared <= TimeSpan.Zero)
+                return null;
+            max = declared;
+            reason = plugin.MaxRecordingDurationReason;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Reading MaxRecordingDuration failed: {ex}");
+            return null;
+        }
+
+        // Very short limits (below twice the margin) stop at half the limit instead of at or below zero.
+        var stopAt = max > RecordingLimitStopMargin * 2 ? max - RecordingLimitStopMargin : max / 2;
+        var message = reason
+            ?? Loc.Instance.GetString("Feedback.RecordingLimitReachedFormat", Math.Round(max.TotalSeconds));
+        return (stopAt, message);
+    }
+
+    /// <summary>
+    /// Stops dictation when the engine's maximum recording length is reached, exactly like the stop
+    /// shortcut. The red message is shown first so a "no speech" or error message from the stop replaces it.
+    /// </summary>
+    private async Task StopRecordingAtLimitAsync(string message)
+    {
+        if (!_isRecording || _isStoppingRecording)
+            return;
+
+        ShowTransientFeedback(message, isError: true, autoHideMilliseconds: RecordingLimitFeedbackMilliseconds);
+        await StopRecordingOrRecoverAsync();
+    }
+
+    /// <summary>Stops recording; if that throws, tears the recording down and shows the error.</summary>
+    private async Task StopRecordingOrRecoverAsync()
+    {
+        try
+        {
+            await StopRecording();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"StopRecording error: {ex}");
+            _isRecording = false;
+            StopActiveRecordingInfrastructure();
+            ApplyTransientIdleFeedback(
+                Loc.Instance.GetString("Status.ErrorFormat", ex.Message),
+                feedbackIsError: true);
+        }
     }
 
     [RelayCommand]
@@ -2629,7 +2704,7 @@ internal static class DictationShortSpeechPolicy
     private const double UltraShortTapSeconds = 0.04;
     private const double ShortClipSeconds = 1.0;
     private const double MinimumTranscriptionSeconds = 0.75;
-    private const double TailPaddingSeconds = 0.3;
+    internal const double TailPaddingSeconds = 0.3;
     private const float ShortClipQuietPeakThreshold = 0.003f;
     private const float LongClipQuietPeakThreshold = 0.006f;
 

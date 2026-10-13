@@ -8,13 +8,12 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
     private readonly ParakeetOpenVinoPlugin _plugin;
     private readonly TextBlock _deviceStatus;
     private readonly ComboBox _deviceCombo;
-    private readonly TextBox _pythonPathBox;
-    private readonly TextBox _ovCacheBox;
     private bool _isRefreshing;
 
     public ParakeetOpenVinoSettingsView(ParakeetOpenVinoPlugin plugin)
     {
         _plugin = plugin;
+        var text = plugin.Text;
         MinWidth = 360;
 
         var title = new TextBlock
@@ -27,12 +26,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var accelerationHint = new TextBlock
         {
-            Text =
-                "Primary device selection: Engine → Local model acceleration in TypeWhisper.\n" +
-                "• Auto → device chosen below (default: Intel GPU)\n" +
-                "• CPU → OpenVINO CPU\n" +
-                "• NVIDIA CUDA / AMD Vulkan / ROCm → not supported; the device chosen below is used instead.\n" +
-                "NPU transcribes only the first 20 s of each recording; use GPU for longer dictation.",
+            Text = text.Get("Settings.AccelerationHint", ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -46,7 +40,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var advancedLabel = new TextBlock
         {
-            Text = "Intel device:",
+            Text = text.Get("Settings.Device"),
             Margin = new Thickness(0, 0, 0, 4),
         };
 
@@ -59,33 +53,14 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
         };
         _deviceCombo.SelectionChanged += DeviceCombo_OnSelectionChanged;
 
-        var pythonLabel = new TextBlock
+        var storage = new TextBlock
         {
-            Text = "Python executable:",
-            Margin = new Thickness(0, 0, 0, 4),
-        };
-
-        _pythonPathBox = new TextBox
-        {
-            Text = plugin.PythonExecutablePath,
+            Text = text.Get("Settings.Storage", plugin.DataDirectory),
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.75,
+            FontSize = 12,
             Margin = new Thickness(0, 0, 0, 8),
         };
-        _pythonPathBox.LostFocus += (_, _) =>
-            _plugin.PythonExecutablePath = _pythonPathBox.Text.Trim();
-
-        var cacheLabel = new TextBlock
-        {
-            Text = "OpenVINO cache (optional):",
-            Margin = new Thickness(0, 0, 0, 4),
-        };
-
-        _ovCacheBox = new TextBox
-        {
-            Text = plugin.OpenVinoCacheDirectory,
-            Margin = new Thickness(0, 0, 0, 8),
-        };
-        _ovCacheBox.LostFocus += (_, _) =>
-            _plugin.OpenVinoCacheDirectory = _ovCacheBox.Text.Trim();
 
         Loaded += (_, _) => RefreshFromPlugin();
         IsVisibleChanged += (_, _) =>
@@ -104,10 +79,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
                 _deviceStatus,
                 advancedLabel,
                 _deviceCombo,
-                pythonLabel,
-                _pythonPathBox,
-                cacheLabel,
-                _ovCacheBox,
+                storage,
             },
         };
     }
@@ -131,8 +103,6 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
                 ? status.DisplayText
                 : $"{status.DisplayText}: {status.Detail}";
             _deviceCombo.SelectedItem = _plugin.PreferredDevice;
-            _pythonPathBox.Text = _plugin.PythonExecutablePath;
-            _ovCacheBox.Text = _plugin.OpenVinoCacheDirectory;
         }
         finally
         {

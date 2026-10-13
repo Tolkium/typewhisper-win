@@ -136,6 +136,7 @@
   "Premium.CorrectionExamples": "Примеры: teh -> the, kubernets -> Kubernetes, recieve -> receive",
   "Feedback.Undo": "Отменить",
   "Feedback.CorrectionLearningUndone": "Обучение исправлениям отменено.",
+  "Feedback.RecordingLimitReachedFormat": "Запись остановлена на ограничении {0} с текущего движка распознавания.",
   "Feedback.LearnedCorrectionFormat": "Изучено \"{0}\" -> \"{1}\"",
   "Feedback.LearnedCorrectionsFormat": "Изучено исправлений: {0}",
   "Nav.Info": "Сведения",

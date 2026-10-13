@@ -1,69 +1,71 @@
 # Parakeet OpenVINO (Intel GPU/NPU)
 
-TypeWhisper transcription plugin for **Parakeet TDT 0.6B v3** on **Intel integrated GPUs** (Arc, Iris Xe) or the **Intel NPU** via **OpenVINO**, with CPU fallback.
+TypeWhisper transcription plugin for **Parakeet TDT 0.6B v3** on **Intel integrated GPUs** (Arc, Iris Xe) or the **Intel NPU** via **OpenVINO**, with CPU fallback. No Python required.
 
 - **Plugin id:** `com.whispernpu.parakeet-openvino`
-- **Devices:** Intel GPU (default), Intel NPU, CPU (onnx-asr INT8)
+- **Devices:** Intel GPU (default), Intel NPU, CPU
 
 ## Architecture
 
 ```
-TypeWhisper → ParakeetOpenVinoPlugin (.NET)
-           → parakeet_server.py (Python sidecar, JSON lines over stdin/stdout)
-           → onnx-asr + OpenVINO
+TypeWhisper → ParakeetOpenVinoPlugin (.NET, in-process)
+           → Engine/  NemoFeatureExtractor → encoder → TdtGreedyDecoder → ParakeetVocabulary
+           → OpenVINO C API (openvino_c.dll, P/Invoke)
 ```
 
-On GPU the FP32 encoder is compiled with a dynamic time axis, so a recording of any length is encoded in one pass — no chunking or stitching in the host. The decoder runs as a static OpenVINO IR on the same device.
+- **Features:** 128-bin log-mel, a C# port of the onnx-asr NumPy preprocessor.
+- **Encoder:** FP32 ONNX model. GPU and CPU compile it with a dynamic time axis, so any recording length is encoded in one pass.
+- **Decoder:** greedy TDT decoding, run on CPU (measured faster than GPU for this per-token loop).
+
+## Setup (model download in TypeWhisper)
+
+Downloading the model in TypeWhisper fetches, into the plugin data folder:
+
+| What | Source | Size |
+|---|---|---|
+| Parakeet ONNX model | Hugging Face `istupakov/parakeet-tdt-0.6b-v3-onnx`, pinned revision | ~2.6 GB |
+| OpenVINO 2026.2.0 runtime DLLs | Intel's official `openvino` wheel on PyPI (only `openvino/libs/*.dll` is kept) | 73 MB download, 194 MB on disk |
+
+Downloads resume after interruptions. The OpenVINO wheel and the model weights are checked by SHA-256; the small `config.json` and `vocab.txt` only by size. Compiled models are cached in `ovcache/`; the first NPU load compiles for about a minute.
 
 ## Known limitation: NPU records at most 20 s
 
-The NPU only runs statically shaped models, so the encoder is compiled for a fixed 20 s window (2000 mel frames at exactly 100 frames/s). In this version the plugin **transcribes only the first 20 s of each recording on NPU** and logs a warning when it cuts. GPU has no limit.
+The NPU only runs statically shaped models, so the encoder is compiled for a fixed 20 s window (2000 mel frames at exactly 100 frames/s). The plugin **transcribes only the first 20 s of each recording on NPU** and logs a warning when it cuts. GPU and CPU have no limit.
 
-Measured on Lunar Lake: NPU output is identical to GPU for clips up to 20.00 s and loses audio from 20.1 s. TypeWhisper appends 200 ms of silence to Parakeet recordings, so about 19.8 s of speech fits.
-
-Splitting long NPU recordings at sentence boundaries and stitching the text is planned for the next version.
+Splitting long NPU recordings at sentence boundaries is planned for the next version.
 
 ## TypeWhisper settings integration
 
 | Host setting (Local model acceleration) | Behavior |
 |---|---|
 | **Auto** | Device chosen in plugin settings (default: Intel GPU) |
-| **CPU** | CPU INT8 |
-| **NVIDIA CUDA / AMD Vulkan / AMD ROCm** | Device chosen in plugin settings — status explains the remap |
+| **CPU** | OpenVINO CPU |
+| **NVIDIA CUDA / AMD Vulkan / AMD ROCm** | Device chosen in plugin settings; status explains the remap |
 
-The plugin settings panel chooses the Intel device (GPU / NPU / CPU) and set the Python path and OpenVINO cache directory. Reload the model after changing the device.
+Reload the model after changing the device.
 
 ## Requirements
 
 - Windows 10/11 x64
 - TypeWhisper ≥ 0.8.4
-- .NET 10 SDK (to build)
-- Python 3.11+ with `openvino` and `onnx-asr` (installed by the plugin on first model download)
 - Up-to-date Intel graphics driver (GPU) / Intel NPU driver (NPU)
+- .NET 10 SDK (to build)
 
-## Build and install
+## Performance (Intel Core Ultra 7 258V, Arc 140V)
 
-```powershell
-dotnet build plugins\TypeWhisper.Plugin.ParakeetOpenVino\TypeWhisper.Plugin.ParakeetOpenVino.csproj -c Release
-```
+| 11 s recording | First time at a new length | Repeat |
+|---|---|---|
+| Intel NPU | ~180 ms | ~180 ms |
+| Intel GPU | ~300–650 ms | ~110 ms |
+| CPU (FP32) | ~1.3 s | ~1.3 s |
 
-The build copies the plugin to `%LOCALAPPDATA%\TypeWhisper\Plugins\com.whispernpu.parakeet-openvino\`. Restart TypeWhisper → enable the plugin → download the model.
+The GPU's first call at a new recording length includes OpenVINO preparing kernels for that shape.
 
-The first GPU load compiles kernels (~15–20 s); later loads use the OpenVINO cache.
+## Licences
 
-## Measured (Intel Arc 140V, Lunar Lake)
+- Plugin: GPL-3.0 (same as TypeWhisper)
 
-| Audio | CPU INT8 | Intel GPU | Intel NPU |
-|---|---|---|---|
-| 11 s | 0.79 s | 0.09 s | 0.14 s |
-| 45 s | 2.00 s | 0.53 s | first 20 s only |
-
-## Tests
-
-```powershell
-dotnet test tests\TypeWhisper.PluginSystem.Tests\TypeWhisper.PluginSystem.Tests.csproj --filter ParakeetOpenVino
-```
-
-## License
-
-GPL-3.0 (compatible with TypeWhisper).
+User-facing texts live in `Localization/en.json` and `de.json` (same convention as the official plugins); TypeWhisper picks the app language and falls back to English.
+- Feature extraction and decoding are ported from [onnx-asr](https://github.com/istupakov/onnx-asr) (MIT); `Engine/nemo128_fbanks.bin` is its mel filter bank
+- OpenVINO: Apache-2.0
+- Parakeet TDT 0.6B v3 model: CC-BY-4.0 (NVIDIA)

@@ -1,18 +1,19 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows.Controls;
+using TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 using TypeWhisper.PluginSDK;
 using TypeWhisper.PluginSDK.Models;
 
 namespace TypeWhisper.Plugin.ParakeetOpenVino;
 
 /// <summary>
-/// Parakeet TDT 0.6B v3 on Intel OpenVINO (GPU/NPU/CPU) via Python sidecar.
-/// SupportsModelDownload lets TypeWhisper manage setup/download state for the local model.
+/// Parakeet TDT 0.6B v3 on Intel OpenVINO (GPU/NPU/CPU), running in-process through the
+/// OpenVINO C API. No Python: the model and the OpenVINO runtime are downloaded by the
+/// host's model download step into the plugin data folder.
 /// </summary>
 public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionEnginePlugin
 {
@@ -20,44 +21,31 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public static readonly IReadOnlyList<string> DeviceOptions = ["GPU", "NPU", "CPU"];
 
-    private static readonly string DefaultPythonPath =
-        Path.Combine(@"C:\WhisperNPU", "venv", "Scripts", "python.exe");
+    /// <summary>How long Dispose waits for a running transcription or load before leaking the engine.</summary>
+    private static readonly TimeSpan DisposeLockTimeout = TimeSpan.FromSeconds(5);
 
-    private static readonly string DefaultOvCache =
-        Path.Combine(@"C:\WhisperNPU", "ovcache");
-
-    private static readonly string LogFilePath =
-        Path.Combine(@"C:\WhisperNPU", "logs", "parakeet-plugin.log");
-
-    private readonly SemaphoreSlim _sidecarLock = new(1, 1);
+    private readonly SemaphoreSlim _engineLock = new(1, 1);
     private IPluginHostServices? _host;
-    private Process? _sidecar;
-    private StreamWriter? _sidecarIn;
-    private StreamReader? _sidecarOut;
-    private CancellationTokenSource? _stderrCts;
-    private Task? _stderrDrainTask;
+    private ParakeetOpenVinoEngine? _engine;
+    private ParakeetSetup? _setup;
+    private bool _setupReady;
+    private bool _logDirectoryCreated;
     private string? _selectedModelId;
-    private string? _loadedModelId;
     private string? _loadedDevice;
-    private string? _activeBackend;
     private string _targetDevice = "GPU";
     private string _preferredDevice = "GPU";
-    private string _pythonPath = DefaultPythonPath;
-    private string _ovCache = DefaultOvCache;
-    private int _requestId;
     private TranscriptionAccelerationPreference _accelerationPreference =
         TranscriptionAccelerationPreference.Auto;
-    private TranscriptionAccelerationStatus _accelerationStatus = new(
-        TranscriptionAccelerationBackend.NvidiaCuda,
-        ParakeetOpenVinoAcceleration.GpuDisplayText);
+    private TranscriptionAccelerationStatus? _accelerationStatus;
+    private PluginText? _text;
 
     public string PluginId => "com.whispernpu.parakeet-openvino";
     public string PluginName => "Parakeet OpenVINO (Intel GPU/NPU)";
-    public string PluginVersion => "0.5.0";
+    public string PluginVersion => "0.6.0";
 
     public string ProviderId => "parakeet-openvino";
-    public string ProviderDisplayName => "Parakeet OpenVINO (lokalne)";
-    public bool IsConfigured => File.Exists(PythonExecutablePath);
+    public string ProviderDisplayName => "Parakeet OpenVINO (local)";
+    public bool IsConfigured => true;
     public string? SelectedModelId => _selectedModelId;
     public bool SupportsTranslation => false;
     public bool SupportsModelDownload => true;
@@ -70,20 +58,34 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public TranscriptionAccelerationPreference AccelerationPreference => _accelerationPreference;
 
-    public TranscriptionAccelerationStatus AccelerationStatus => _accelerationStatus;
+    public TranscriptionAccelerationStatus AccelerationStatus => _accelerationStatus ??= ComputeAccelerationStatus();
+
+    /// <summary>User-facing text in the app language (Localization/*.json).</summary>
+    internal PluginText Text => _text ??= new PluginText(_host?.Localization);
 
     public IReadOnlyList<PluginModelInfo> TranscriptionModels { get; } =
     [
         new(ModelId, "Parakeet TDT 0.6B v3 (OpenVINO)")
         {
-            SizeDescription = "~3.2 GB (INT8 + FP32 encoder)",
-            EstimatedSizeMB = 3200,
+            SizeDescription = "~2.6 GB model + ~0.2 GB OpenVINO runtime",
+            EstimatedSizeMB = 2750,
             IsRecommended = true,
             LanguageCount = 25,
         }
     ];
 
     public IReadOnlyList<string> SupportedLanguages => [];
+
+    /// <summary>
+    /// The loaded engine's input window (NPU: 20 s; GPU/CPU: none), or the target device's before a load.
+    /// The host stops dictation early enough that the audio it sends, including its tail padding, fits.
+    /// Hosts without this SDK member ignore it; the engine then still cuts audio to the window.
+    /// </summary>
+    public TimeSpan? MaxRecordingDuration => _engine is { } engine
+        ? engine.MaxAudioDuration
+        : _targetDevice == "NPU" ? TimeSpan.FromSeconds(ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds) : null;
+
+    public string? MaxRecordingDurationReason => Text.Get("Limit.Reason", ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds);
 
     /// <summary>Device the next model load will use, resolved from host acceleration and <see cref="PreferredDevice"/>.</summary>
     public string TargetDevice => _targetDevice;
@@ -105,47 +107,42 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         }
     }
 
-    public string PythonExecutablePath
-    {
-        get => _pythonPath;
-        set
-        {
-            _pythonPath = string.IsNullOrWhiteSpace(value) ? DefaultPythonPath : value.Trim();
-            TrySetSetting("pythonPath", _pythonPath);
-        }
-    }
+    /// <summary>Folder holding the model, the OpenVINO runtime, the compile cache and logs.</summary>
+    public string DataDirectory => _host?.PluginDataDirectory ?? Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "TypeWhisper",
+        "PluginData",
+        PluginId);
 
-    public string OpenVinoCacheDirectory
-    {
-        get => _ovCache;
-        set
-        {
-            _ovCache = string.IsNullOrWhiteSpace(value) ? DefaultOvCache : value.Trim();
-            TrySetSetting("ovCache", _ovCache);
-        }
-    }
+    /// <summary>Download/readiness state for <see cref="DataDirectory"/>; reset when the host changes it.</summary>
+    private ParakeetSetup Setup => _setup ??= new ParakeetSetup(DataDirectory);
+
+    private string LogFilePath => Path.Combine(DataDirectory, "logs", "parakeet-openvino.log");
 
     public Task ActivateAsync(IPluginHostServices host)
     {
         _host = host;
+        _setup = null; // the data directory and localization now come from the host
+        _text = null;
+        _setupReady = false;
         TryLoadPersistedSettings();
         ApplyAccelerationPreference(_accelerationPreference);
-        // Always pin WhisperNPU venv unless user explicitly set a working path in settings.
-        if (!File.Exists(_pythonPath) || !_pythonPath.StartsWith(@"C:\WhisperNPU\", StringComparison.OrdinalIgnoreCase))
-        {
-            _pythonPath = DefaultPythonPath;
-            TrySetSetting("pythonPath", _pythonPath);
-        }
-        Log(
-            PluginLogLevel.Info,
-            $"Activated plugin v{PluginVersion}; python='{_pythonPath}', device='{_targetDevice}', cache='{_ovCache}', data='{GetDataDirectory()}'");
+        Log(PluginLogLevel.Info, $"Activated plugin v{PluginVersion}; device='{_targetDevice}', data='{DataDirectory}'");
         return Task.CompletedTask;
     }
 
-    public Task DeactivateAsync()
+    public async Task DeactivateAsync()
     {
-        StopSidecar();
-        return Task.CompletedTask;
+        // Wait for any running load/transcription: disposing native handles under it would crash.
+        await _engineLock.WaitAsync();
+        try
+        {
+            DisposeEngine();
+        }
+        finally
+        {
+            _engineLock.Release();
+        }
     }
 
     public UserControl? CreateSettingsView() => new ParakeetOpenVinoSettingsView(this);
@@ -156,12 +153,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private void ApplyAccelerationPreference(TranscriptionAccelerationPreference preference)
     {
         _accelerationPreference = preference;
-        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference, _preferredDevice);
-        _targetDevice = resolution.TargetDevice;
-        _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
-            resolution,
-            _loadedDevice,
-            _activeBackend);
+        _targetDevice = ParakeetOpenVinoAcceleration.Resolve(preference, _preferredDevice, Text).TargetDevice;
+        _accelerationStatus = ComputeAccelerationStatus();
         Log(PluginLogLevel.Info, $"Acceleration preference {preference} -> OpenVINO device {_targetDevice}");
     }
 
@@ -172,128 +165,72 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         _selectedModelId = modelId;
     }
 
-    public bool IsModelDownloaded(string modelId) =>
-        File.Exists(Path.Combine(GetDataDirectory(), ".setup-complete"));
+    /// <summary>Called often by the host UI; a positive result is cached until the next download or failed load.</summary>
+    public bool IsModelDownloaded(string modelId) => _setupReady || (_setupReady = Setup.IsReady);
 
     public async Task DownloadModelAsync(string modelId, IProgress<double>? progress, CancellationToken ct)
     {
-        EnsurePythonExists();
-        var dataDir = GetDataDirectory();
-        Directory.CreateDirectory(dataDir);
-
-        await EnsurePythonPackagesAsync(progress, ct);
-
-        progress?.Report(0.25);
-        Log(PluginLogLevel.Info, "Downloading Parakeet model via onnx-asr...");
-
-        var scriptPath = GetScriptPath("parakeet_server.py");
-        var psi = new ProcessStartInfo
+        var watch = Stopwatch.StartNew();
+        try
         {
-            FileName = PythonExecutablePath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        psi.ArgumentList.Add(scriptPath);
-        psi.ArgumentList.Add("--setup");
-        psi.ArgumentList.Add("--model-dir");
-        psi.ArgumentList.Add(dataDir);
-        ConfigurePythonProcess(psi);
-
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start parakeet setup");
-
-        string? line;
-        while ((line = await proc.StandardOutput.ReadLineAsync(ct)) is not null)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                using var doc = JsonDocument.Parse(line);
-                var root = doc.RootElement;
-                if (root.TryGetProperty("progress", out var prog))
-                    progress?.Report(0.25 + prog.GetDouble() * 0.75);
-                if (root.TryGetProperty("error", out var err))
-                    throw new InvalidOperationException(err.GetString());
-            }
-            catch (JsonException)
-            {
-                Debug.WriteLine($"[ParakeetOV] setup: {line}");
-            }
+            _setupReady = false;
+            await Setup.EnsureAsync(progress, message => Log(PluginLogLevel.Info, message), ct);
+            Log(PluginLogLevel.Info, $"Setup complete in {watch.Elapsed.TotalSeconds:F0}s");
         }
-
-        await proc.WaitForExitAsync(ct);
-        if (proc.ExitCode != 0)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var stderr = await proc.StandardError.ReadToEndAsync(ct);
-            throw new InvalidOperationException(
-                $"Parakeet setup failed (exit {proc.ExitCode}): {Tail(stderr, 800)}");
+            Log(PluginLogLevel.Error, $"Setup failed after {watch.Elapsed.TotalSeconds:F0}s: {ex}");
+            throw;
         }
-
-        progress?.Report(1.0);
-        Log(PluginLogLevel.Info, "Parakeet setup complete");
     }
 
     public async Task LoadModelAsync(string modelId, CancellationToken ct)
     {
-        var loadWatch = Stopwatch.StartNew();
-        Log(PluginLogLevel.Info, $"LoadModelAsync start: model='{modelId}', downloaded={IsModelDownloaded(modelId)}");
-        if (!IsModelDownloaded(modelId))
-            throw new FileNotFoundException("Model not set up. Download it first.");
+        var watch = Stopwatch.StartNew();
+        var setup = Setup;
+        _setupReady = setup.IsReady;
+        if (!_setupReady)
+            throw new FileNotFoundException(Text.Get("Error.NotSetUp"));
 
-        EnsurePythonExists();
-        await VerifyPythonRuntimeAsync(ct);
-        await _sidecarLock.WaitAsync(ct);
-        var loadSucceeded = false;
+        await _engineLock.WaitAsync(ct);
         try
         {
-            StopSidecar();
-            KillOwnOrphanSidecars();
-            StartSidecar();
+            DisposeEngine();
+            var device = TargetDevice;
+            Log(PluginLogLevel.Info, $"Loading Parakeet on {device} (first NPU load compiles for ~1 min)");
 
-            using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            loadCts.CancelAfter(TimeSpan.FromMinutes(6));
-
-            var response = await SendCommandAsync(new
+            // Native compile cannot be cancelled once started; run it off the UI thread.
+            _engine = await Task.Run(() =>
             {
-                cmd = "load",
-                device = TargetDevice,
-            }, loadCts.Token);
+                OpenVinoLoader.Load(setup.RuntimeDirectory);
+                var engine = new ParakeetOpenVinoEngine(setup.WeightsDirectory, device, setup.CacheDirectory);
+                try
+                {
+                    engine.WarmUp();
+                }
+                catch
+                {
+                    engine.Dispose();
+                    throw;
+                }
+                return engine;
+            }, ct);
 
-            if (response.TryGetProperty("error", out var err))
-                throw new InvalidOperationException($"Load failed: {err.GetString()}");
-
-            var loadedDevice = response.TryGetProperty("device", out var dev)
-                ? NormalizeDevice(dev.GetString())
-                : TargetDevice;
-            var backend = response.TryGetProperty("backend", out var be)
-                ? be.GetString()
-                : null;
-
-            _loadedModelId = modelId;
             _selectedModelId = modelId;
-            _loadedDevice = loadedDevice;
-            _activeBackend = backend;
-            _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
-                ParakeetOpenVinoAcceleration.Resolve(_accelerationPreference, _preferredDevice),
-                _loadedDevice,
-                _activeBackend);
-            Log(
-                PluginLogLevel.Info,
-                $"Parakeet loaded on {_loadedDevice} backend='{_activeBackend ?? "unknown"}' in {loadWatch.Elapsed.TotalSeconds:F1}s");
-            loadSucceeded = true;
+            _loadedDevice = device;
+            ApplyAccelerationPreference(_accelerationPreference);
+            Log(PluginLogLevel.Info, $"Parakeet loaded on {device} with OpenVINO {OpenVinoLoader.Version()} in {watch.Elapsed.TotalSeconds:F1}s");
         }
         catch (Exception ex)
         {
-            Log(PluginLogLevel.Error, $"LoadModelAsync failed after {loadWatch.Elapsed.TotalSeconds:F1}s: {ex}");
+            Log(PluginLogLevel.Error, $"LoadModelAsync failed after {watch.Elapsed.TotalSeconds:F1}s: {ex}");
+            DisposeEngine();
+            ApplyAccelerationPreference(_accelerationPreference); // status must not show the old engine
             throw;
         }
         finally
         {
-            if (!loadSucceeded)
-                StopSidecar();
-            _sidecarLock.Release();
+            _engineLock.Release();
         }
     }
 
@@ -301,55 +238,38 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         byte[] wavAudio, string? language, bool translate, string? prompt, CancellationToken ct)
     {
         if (translate)
-            throw new NotSupportedException(
-                "Parakeet OpenVINO does not translate during transcription. " +
-                "Set a target language in TypeWhisper to translate after transcription.");
+            throw new NotSupportedException(Text.Get("Error.TranslationNotSupported"));
 
-        var transcribeWatch = Stopwatch.StartNew();
-        await _sidecarLock.WaitAsync(ct);
+        var watch = Stopwatch.StartNew();
+        await _engineLock.WaitAsync(ct);
         try
         {
-            if (_sidecar is null || _sidecar.HasExited)
-                throw new InvalidOperationException("No model loaded. Call LoadModelAsync first.");
+            var engine = _engine ?? throw new InvalidOperationException(Text.Get("Error.NoModelLoaded"));
+            var result = await Task.Run(() => engine.Transcribe(WavReader.ReadMono16k(wavAudio)), ct);
 
-            if (_loadedModelId is null)
-                throw new InvalidOperationException("Model is still loading. Wait for load to complete.");
-
-            var response = await SendCommandAsync(new
-            {
-                cmd = "transcribe",
-                audio_base64 = Convert.ToBase64String(wavAudio),
-                language,
-            }, ct);
-
-            if (response.TryGetProperty("error", out var err))
-                throw new InvalidOperationException($"Transcription failed: {err.GetString()}");
-
-            if (response.TryGetProperty("truncated", out var truncated) && truncated.GetBoolean())
+            if (result.Truncated)
             {
                 Log(
                     PluginLogLevel.Warning,
-                    $"NPU limit: only the first {ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds} s were transcribed");
+                    $"NPU limit: only the first {ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds} s of {result.AudioSeconds:F1} s were transcribed");
             }
 
-            var text = SanitizeOutput(response.GetProperty("text").GetString() ?? "");
-            var duration = response.GetProperty("duration").GetDouble();
-            Log(
-                PluginLogLevel.Info,
-                $"Transcribe ok: audio={duration:F2}s, elapsed={transcribeWatch.Elapsed.TotalSeconds:F2}s, textLen={text.Length}, hadPad={response.GetProperty("text").GetString()?.Contains("<pad>", StringComparison.OrdinalIgnoreCase) == true}");
-            return new PluginTranscriptionResult(text, language, duration, NoSpeechProbability: null);
+            var text = SanitizeOutput(result.Text);
+            Log(PluginLogLevel.Info, $"Transcribe ok: audio={result.AudioSeconds:F2}s, elapsed={watch.Elapsed.TotalSeconds:F2}s, textLen={text.Length}");
+            return new PluginTranscriptionResult(text, language, result.AudioSeconds, NoSpeechProbability: null);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            Log(PluginLogLevel.Error, $"Transcribe failed after {transcribeWatch.Elapsed.TotalSeconds:F2}s: {ex}");
+            Log(PluginLogLevel.Error, $"Transcribe failed after {watch.Elapsed.TotalSeconds:F2}s: {ex}");
             throw;
         }
         finally
         {
-            _sidecarLock.Release();
+            _engineLock.Release();
         }
     }
 
+    /// <summary>Drops &lt;pad&gt; tokens; output that is mostly padding (short live-poll buffers) becomes empty.</summary>
     internal static string SanitizeOutput(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -370,283 +290,64 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public async Task UnloadModelAsync()
     {
-        await _sidecarLock.WaitAsync();
+        await _engineLock.WaitAsync();
         try
         {
-            StopSidecar();
-            _loadedModelId = null;
-            _loadedDevice = null;
-            _activeBackend = null;
+            DisposeEngine();
             ApplyAccelerationPreference(_accelerationPreference);
         }
         finally
         {
-            _sidecarLock.Release();
+            _engineLock.Release();
         }
     }
 
     public void Dispose()
     {
-        StopSidecar();
-        _sidecarLock.Dispose();
-    }
-
-    private async Task EnsurePythonPackagesAsync(IProgress<double>? progress, CancellationToken ct)
-    {
-        progress?.Report(0.05);
-        Log(PluginLogLevel.Info, "Installing Python packages (openvino, onnx-asr)...");
-
-        var reqPath = GetScriptPath("requirements.txt");
-        var args = $"-m pip install -q -r \"{reqPath}\"";
-        await RunProcessAsync(PythonExecutablePath, args, ct, timeoutMs: 1_800_000);
-        progress?.Report(0.2);
-    }
-
-    private void StartSidecar()
-    {
-        var scriptPath = GetScriptPath("parakeet_server.py");
-        var dataDir = GetDataDirectory();
-        var python = Path.GetFullPath(PythonExecutablePath);
-        if (!python.StartsWith(@"C:\WhisperNPU\", StringComparison.OrdinalIgnoreCase))
-            Log(PluginLogLevel.Warning, $"Non-WhisperNPU Python path: {python}");
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = python,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        psi.ArgumentList.Add(scriptPath);
-        psi.ArgumentList.Add("--serve");
-        psi.ArgumentList.Add("--model-dir");
-        psi.ArgumentList.Add(dataDir);
-        psi.ArgumentList.Add("--device");
-        psi.ArgumentList.Add(TargetDevice);
-        psi.ArgumentList.Add("--ov-cache");
-        psi.ArgumentList.Add(OpenVinoCacheDirectory);
-        ConfigurePythonProcess(psi);
-
-        _sidecar = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start Parakeet sidecar");
-        _sidecarIn = _sidecar.StandardInput;
-        _sidecarOut = _sidecar.StandardOutput;
-        Log(PluginLogLevel.Info, $"Started sidecar pid={_sidecar.Id}: {python} {string.Join(" ", psi.ArgumentList)}");
-        StartStderrDrain(_sidecar);
-    }
-
-    private void StartStderrDrain(Process proc)
-    {
-        StopStderrDrain();
-        _stderrCts = new CancellationTokenSource();
-        var ct = _stderrCts.Token;
-        var stderr = proc.StandardError;
-        _stderrDrainTask = Task.Run(async () =>
-        {
-            try
-            {
-                while (!ct.IsCancellationRequested && !proc.HasExited)
-                {
-                    var line = await stderr.ReadLineAsync(ct).ConfigureAwait(false);
-                    if (line is null)
-                        break;
-                    Log(PluginLogLevel.Info, line);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // expected on shutdown
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[ParakeetOV] stderr drain failed: {ex.Message}");
-            }
-        }, ct);
-    }
-
-    private void StopStderrDrain()
-    {
-        try
-        {
-            _stderrCts?.Cancel();
-        }
-        catch
-        {
-            // ignore
-        }
-
-        _stderrCts?.Dispose();
-        _stderrCts = null;
-        _stderrDrainTask = null;
-    }
-
-    private void StopSidecar()
-    {
-        if (_sidecar is null)
+        // Same race as DeactivateAsync, but synchronous. If a native compile is still running, leak the
+        // engine rather than free handles it is using. The semaphore is not disposed (it has no wait
+        // handle), so a caller still waiting on it gets "No model loaded" instead of ObjectDisposedException.
+        if (!_engineLock.Wait(DisposeLockTimeout))
             return;
 
-        StopStderrDrain();
-
         try
         {
-            if (!_sidecar.HasExited && _sidecarIn is not null)
-            {
-                _sidecarIn.WriteLine(JsonSerializer.Serialize(new { cmd = "quit" }));
-                _sidecarIn.Flush();
-                _sidecar.WaitForExit(3000);
-            }
+            DisposeEngine();
         }
-        catch
+        finally
         {
-            // ignore
+            _engineLock.Release();
         }
+    }
 
-        if (!_sidecar.HasExited)
-        {
-            try
-            {
-                _sidecar.Kill();
-            }
-            catch
-            {
-                // ignore
-            }
-        }
+    private string? ActiveBackendText =>
+        _loadedDevice is null ? null : Text.Get("Status.Runtime", ParakeetSetup.OpenVinoVersion);
 
-        _sidecar.Dispose();
-        _sidecar = null;
-        _sidecarIn = null;
-        _sidecarOut = null;
-        _loadedModelId = null;
+    private TranscriptionAccelerationStatus ComputeAccelerationStatus() =>
+        ParakeetOpenVinoAcceleration.ToStatus(
+            ParakeetOpenVinoAcceleration.Resolve(_accelerationPreference, _preferredDevice, Text),
+            _loadedDevice,
+            ActiveBackendText,
+            Text);
+
+    private void DisposeEngine()
+    {
+        _engine?.Dispose();
+        _engine = null;
         _loadedDevice = null;
-        _activeBackend = null;
-    }
-
-    private async Task<JsonElement> SendCommandAsync(object command, CancellationToken ct)
-    {
-        if (_sidecarIn is null || _sidecarOut is null)
-            throw new InvalidOperationException("Sidecar not running");
-
-        var reqId = Interlocked.Increment(ref _requestId);
-        var wrapper = new Dictionary<string, object?>();
-        foreach (var prop in JsonSerializer.SerializeToElement(command).EnumerateObject())
-            wrapper[prop.Name] = prop.Value;
-        wrapper["req_id"] = reqId;
-        var commandName = wrapper.TryGetValue("cmd", out var cmd) ? cmd?.ToString() : "unknown";
-        var requestJson = JsonSerializer.Serialize(wrapper);
-        if (wrapper.TryGetValue("audio_base64", out var audioValue) && audioValue is string audioBase64)
-        {
-            Log(
-                PluginLogLevel.Info,
-                $"sidecar request #{reqId}: {commandName}, audio_base64_chars={audioBase64.Length}");
-        }
-        else
-        {
-            Log(PluginLogLevel.Info, $"sidecar request #{reqId} json: {requestJson}");
-        }
-        await _sidecarIn.WriteLineAsync(requestJson.AsMemory(), ct);
-        await _sidecarIn.FlushAsync(ct);
-
-        while (true)
-        {
-            var response = await _sidecarOut.ReadLineAsync(ct)
-                ?? throw new InvalidOperationException("Parakeet sidecar closed unexpectedly");
-
-            using var doc = JsonDocument.Parse(response);
-            var root = doc.RootElement.Clone();
-            if (!root.TryGetProperty("req_id", out var id) || id.GetInt32() != reqId)
-                continue;
-
-            if (root.TryGetProperty("pending", out var pending) && pending.GetBoolean())
-            {
-                var phase = root.TryGetProperty("phase", out var ph) ? ph.GetString() : null;
-                if (!string.IsNullOrWhiteSpace(phase))
-                    Log(PluginLogLevel.Info, $"sidecar request #{reqId} pending: {phase}");
-                continue;
-            }
-
-            Log(PluginLogLevel.Info, $"sidecar request #{reqId} completed");
-            return root;
-        }
-    }
-
-    private void EnsurePythonExists()
-    {
-        if (!File.Exists(PythonExecutablePath))
-            throw new FileNotFoundException(
-                $"Python not found: {PythonExecutablePath}. Set path in plugin settings to C:\\WhisperNPU\\venv\\Scripts\\python.exe",
-                PythonExecutablePath);
-    }
-
-    private async Task VerifyPythonRuntimeAsync(CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = Path.GetFullPath(PythonExecutablePath),
-            Arguments = "-c \"import openvino, onnx_asr; print('ok')\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        ConfigurePythonProcess(psi);
-
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to verify Python runtime");
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(45));
-        try
-        {
-            await proc.WaitForExitAsync(cts.Token);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            proc.Kill(true);
-            throw new TimeoutException("Python runtime check timed out");
-        }
-
-        var stderr = await proc.StandardError.ReadToEndAsync(ct);
-        if (proc.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"Python at {PythonExecutablePath} is missing openvino/onnx-asr. Use C:\\WhisperNPU\\venv\\Scripts\\python.exe. {Tail(stderr, 300)}");
-        }
-    }
-
-    private void KillOwnOrphanSidecars()
-    {
-        try
-        {
-            var dataDirMarker = GetDataDirectory().Replace("'", "''");
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments =
-                    $"-NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"Name='python.exe'\\\" | Where-Object {{ $_.CommandLine -like '*parakeet_server.py*' -and $_.CommandLine -like '*{dataDirMarker}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            using var proc = Process.Start(psi);
-            proc?.WaitForExit(8000);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[ParakeetOV] KillOwnOrphanSidecars: {ex.Message}");
-        }
     }
 
     private void Log(PluginLogLevel level, string message)
     {
-        var line = $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] [{level}] {message}";
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(LogFilePath)!);
-            File.AppendAllText(LogFilePath, line + Environment.NewLine, Encoding.UTF8);
+            var path = LogFilePath;
+            if (!_logDirectoryCreated)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                _logDirectoryCreated = true;
+            }
+            File.AppendAllText(path, $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] [{level}] {message}{Environment.NewLine}", Encoding.UTF8);
         }
         catch
         {
@@ -665,15 +366,6 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         Debug.WriteLine($"[ParakeetOV] {message}");
     }
 
-    private string GetDataDirectory()
-    {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "TypeWhisper",
-            "PluginData",
-            PluginId);
-    }
-
     private void TryLoadPersistedSettings()
     {
         if (_host is null)
@@ -682,8 +374,6 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         try
         {
             _preferredDevice = NormalizeDevice(_host.GetSetting<string>("targetDevice") ?? "GPU");
-            _pythonPath = _host.GetSetting<string>("pythonPath") ?? DefaultPythonPath;
-            _ovCache = _host.GetSetting<string>("ovCache") ?? DefaultOvCache;
             return;
         }
         catch (MissingMethodException)
@@ -693,18 +383,13 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
         try
         {
-            var settingsPath = Path.Combine(GetDataDirectory(), "settings.json");
+            var settingsPath = Path.Combine(DataDirectory, "settings.json");
             if (!File.Exists(settingsPath))
                 return;
 
             using var doc = JsonDocument.Parse(File.ReadAllText(settingsPath));
-            var root = doc.RootElement;
-            if (root.TryGetProperty("targetDevice", out var device))
+            if (doc.RootElement.TryGetProperty("targetDevice", out var device))
                 _preferredDevice = NormalizeDevice(device.GetString());
-            if (root.TryGetProperty("pythonPath", out var python))
-                _pythonPath = python.GetString() ?? DefaultPythonPath;
-            if (root.TryGetProperty("ovCache", out var cache))
-                _ovCache = cache.GetString() ?? DefaultOvCache;
         }
         catch (Exception ex)
         {
@@ -727,25 +412,6 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         }
     }
 
-    private static void ConfigurePythonProcess(ProcessStartInfo psi)
-    {
-        psi.StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        psi.StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        if (psi.RedirectStandardInput)
-            psi.StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        psi.Environment["PYTHONUNBUFFERED"] = "1";
-        psi.Environment["PYTHONIOENCODING"] = "utf-8";
-        psi.Environment["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1";
-        psi.Environment["PARAKEET_SIDECAR_LOG"] =
-            Path.Combine(@"C:\WhisperNPU", "logs", "parakeet-sidecar.log");
-    }
-
-    private static string GetScriptPath(string fileName)
-    {
-        var pluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
-        return Path.Combine(pluginDir, "Scripts", fileName);
-    }
-
     private static string NormalizeDevice(string? device) =>
         device?.ToUpperInvariant() switch
         {
@@ -753,43 +419,4 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             "NPU" => "NPU",
             _ => "GPU",
         };
-
-    private static string Tail(string text, int max) =>
-        text.Length <= max ? text : text[^max..];
-
-    private static async Task RunProcessAsync(string exe, string args, CancellationToken ct, int timeoutMs)
-    {
-        var psi = new ProcessStartInfo(exe, args)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        psi.Environment["PYTHONIOENCODING"] = "utf-8";
-
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start {exe}");
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(timeoutMs);
-        try
-        {
-            await proc.WaitForExitAsync(cts.Token);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            proc.Kill();
-            throw new TimeoutException($"Process timed out: {exe}");
-        }
-
-        if (proc.ExitCode != 0)
-        {
-            var stderr = await proc.StandardError.ReadToEndAsync(ct);
-            throw new InvalidOperationException($"{exe} failed: {Tail(stderr, 500)}");
-        }
-    }
 }
-
