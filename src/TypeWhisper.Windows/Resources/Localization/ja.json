@@ -136,7 +136,6 @@
   "Premium.CorrectionExamples": "例: teh -> the, kubernets -> Kubernetes, recieve -> receive",
   "Feedback.Undo": "元に戻す",
   "Feedback.CorrectionLearningUndone": "修正の学習を元に戻しました。",
-  "Feedback.RecordingLimitReachedFormat": "現在の文字起こしエンジンの上限 {0} 秒で録音を停止しました。",
   "Feedback.LearnedCorrectionFormat": "\"{0}\" -> \"{1}\" を学習しました",
   "Feedback.LearnedCorrectionsFormat": "{0}件の修正を学習しました",
   "Nav.Info": "情報",

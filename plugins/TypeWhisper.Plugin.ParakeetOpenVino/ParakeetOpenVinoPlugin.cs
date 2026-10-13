@@ -30,6 +30,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private ParakeetSetup? _setup;
     private bool _setupReady;
     private bool _logDirectoryCreated;
+    private NpuLimitWarning? _limitWarning;
+    private readonly List<IDisposable> _eventSubscriptions = [];
     private string? _selectedModelId;
     private string? _loadedDevice;
     private string _targetDevice = "GPU";
@@ -76,16 +78,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public IReadOnlyList<string> SupportedLanguages => [];
 
-    /// <summary>
-    /// The loaded engine's input window (NPU: 20 s; GPU/CPU: none), or the target device's before a load.
-    /// The host stops dictation early enough that the audio it sends, including its tail padding, fits.
-    /// Hosts without this SDK member ignore it; the engine then still cuts audio to the window.
-    /// </summary>
-    public TimeSpan? MaxRecordingDuration => _engine is { } engine
-        ? engine.MaxAudioDuration
-        : _targetDevice == "NPU" ? TimeSpan.FromSeconds(ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds) : null;
-
-    public string? MaxRecordingDurationReason => Text.Get("Limit.Reason", ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds);
+    /// <summary>Input window of the loaded engine (NPU: 20 s), or null when it accepts any length.</summary>
+    internal TimeSpan? ActiveAudioLimit => _engine?.MaxAudioDuration;
 
     /// <summary>Device the next model load will use, resolved from host acceleration and <see cref="PreferredDevice"/>.</summary>
     public string TargetDevice => _targetDevice;
@@ -127,12 +121,14 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         _setupReady = false;
         TryLoadPersistedSettings();
         ApplyAccelerationPreference(_accelerationPreference);
+        SubscribeToRecordingEvents(host);
         Log(PluginLogLevel.Info, $"Activated plugin v{PluginVersion}; device='{_targetDevice}', data='{DataDirectory}'");
         return Task.CompletedTask;
     }
 
     public async Task DeactivateAsync()
     {
+        UnsubscribeFromRecordingEvents();
         // Wait for any running load/transcription: disposing native handles under it would crash.
         await _engineLock.WaitAsync();
         try
@@ -304,6 +300,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public void Dispose()
     {
+        UnsubscribeFromRecordingEvents();
+
         // Same race as DeactivateAsync, but synchronous. If a native compile is still running, leak the
         // engine rather than free handles it is using. The semaphore is not disposed (it has no wait
         // handle), so a caller still waiting on it gets "No model loaded" instead of ObjectDisposedException.
@@ -318,6 +316,44 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         {
             _engineLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Times each dictation from the host's recording events so the user is warned when it passes the NPU
+    /// window. Stock TypeWhisper offers plugins no way to stop a recording, so this is a warning only.
+    /// </summary>
+    private void SubscribeToRecordingEvents(IPluginHostServices host)
+    {
+        UnsubscribeFromRecordingEvents();
+        _limitWarning = new NpuLimitWarning(
+            () => ActiveAudioLimit,
+            () => NpuLimitPopup.ShowMessage(Text.Get("Limit.Warning", ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds)));
+        try
+        {
+            _eventSubscriptions.Add(host.EventBus.Subscribe<RecordingStartedEvent>(_ =>
+            {
+                _limitWarning?.OnRecordingStarted();
+                return Task.CompletedTask;
+            }));
+            _eventSubscriptions.Add(host.EventBus.Subscribe<RecordingStoppedEvent>(_ =>
+            {
+                _limitWarning?.OnRecordingStopped();
+                return Task.CompletedTask;
+            }));
+        }
+        catch (Exception ex) when (ex is NotSupportedException or MissingMethodException)
+        {
+            Log(PluginLogLevel.Warning, $"Recording events unavailable; no NPU limit warning: {ex.Message}");
+        }
+    }
+
+    private void UnsubscribeFromRecordingEvents()
+    {
+        foreach (var subscription in _eventSubscriptions)
+            subscription.Dispose();
+        _eventSubscriptions.Clear();
+        _limitWarning?.Dispose();
+        _limitWarning = null;
     }
 
     private string? ActiveBackendText =>

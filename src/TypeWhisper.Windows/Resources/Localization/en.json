@@ -136,7 +136,6 @@
   "Premium.CorrectionExamples": "Examples: teh -> the, kubernets -> Kubernetes, recieve -> receive",
   "Feedback.Undo": "Undo",
   "Feedback.CorrectionLearningUndone": "Correction learning undone.",
-  "Feedback.RecordingLimitReachedFormat": "Recording stopped at the {0} s limit of the current transcription engine.",
   "Feedback.LearnedCorrectionFormat": "Learned \"{0}\" -> \"{1}\"",
   "Feedback.LearnedCorrectionsFormat": "Learned {0} corrections",
   "Nav.Info": "Info",

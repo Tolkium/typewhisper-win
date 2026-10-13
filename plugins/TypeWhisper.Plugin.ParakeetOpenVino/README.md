@@ -30,7 +30,7 @@ Downloads resume after interruptions. The OpenVINO wheel and the model weights a
 
 ## Known limitation: NPU records at most 20 s
 
-The NPU only runs statically shaped models, so the encoder is compiled for a fixed 20 s window (2000 mel frames at exactly 100 frames/s). The plugin **transcribes only the first 20 s of each recording on NPU** and logs a warning when it cuts. GPU and CPU have no limit.
+The NPU only runs statically shaped models, so the encoder is compiled for a fixed 20 s window (2000 mel frames at exactly 100 frames/s). The plugin **transcribes only the first 20 s of each recording on NPU** and logs a warning when it cuts. When a dictation passes 20 s, the plugin shows a red banner at the top of the screen (TypeWhisper gives plugins no way to stop a recording). GPU and CPU have no limit.
 
 Splitting long NPU recordings at sentence boundaries is planned for the next version.
 

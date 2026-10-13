@@ -8,7 +8,7 @@
   "Status.UnsupportedAmdRocm": "AMD ROCm wird von dieser Engine nicht unterstützt. Es wird Intel {0} über OpenVINO verwendet.",
   "Status.ReloadRequired": "Auf {0} geladen; die Auswahl entspricht {1}. Modell neu laden, um die Änderung zu übernehmen.",
   "Status.Runtime": "OpenVINO {0}",
-  "Limit.Reason": "NPU-Limit: {0} s pro Aufnahme. Für längeres Diktieren zur GPU wechseln.",
+  "Limit.Warning": "NPU-Limit erreicht: {0} s pro Aufnahme. Danach Gesprochenes wird nicht transkribiert. Für längeres Diktieren zur GPU wechseln.",
   "Settings.AccelerationHint": "Die Geräteauswahl erfolgt primär unter Engine → Lokale Modellbeschleunigung in TypeWhisper.\n• Auto → unten gewähltes Gerät (Standard: Intel-GPU)\n• CPU → OpenVINO CPU\n• NVIDIA CUDA / AMD Vulkan / ROCm → nicht unterstützt; stattdessen wird das unten gewählte Gerät verwendet.\nDie NPU transkribiert nur die ersten {0} s jeder Aufnahme; für längeres Diktieren die GPU verwenden.",
   "Settings.Device": "Intel-Gerät:",
   "Settings.Storage": "Modell, OpenVINO-Laufzeit und Protokolle: {0}",

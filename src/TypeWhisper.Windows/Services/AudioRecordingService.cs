@@ -17,7 +17,7 @@ public sealed class AudioRecordingService : IStreamingAudioSource, IDisposable
     private const float AgcMaxGain = 20f;
     private const float AgcMinGain = 1f;
     private const float NormalizationTarget = 0.707f;
-    internal static readonly TimeSpan StopDrainDuration = TimeSpan.FromMilliseconds(120);
+    private static readonly TimeSpan StopDrainDuration = TimeSpan.FromMilliseconds(120);
     private static readonly TimeSpan DefaultDevicePollInterval = TimeSpan.FromSeconds(2);
 
     /// <summary>

@@ -75,14 +75,42 @@ public class ParakeetOpenVinoPluginTests
     }
 
     [Fact]
-    public void MaxRecordingDuration_OnlyLimitsNpu()
+    public async Task LimitWarning_ShowsAfterLimitWhenRecordingContinues()
     {
-        var sut = new ParakeetOpenVinoPlugin { PreferredDevice = "NPU" };
-        Assert.Equal(TimeSpan.FromSeconds(20), sut.MaxRecordingDuration);
-        Assert.Contains("20 s", sut.MaxRecordingDurationReason);
+        var delay = new ManualDelay();
+        var shown = 0;
+        using var warning = new NpuLimitWarning(() => TimeSpan.FromSeconds(20), () => shown++, delay.WaitAsync);
 
-        sut.PreferredDevice = "GPU";
-        Assert.Null(sut.MaxRecordingDuration);
+        warning.OnRecordingStarted();
+        Assert.Equal(TimeSpan.FromSeconds(20), delay.Requested);
+        await delay.ElapseAsync();
+
+        Assert.Equal(1, shown);
+    }
+
+    [Fact]
+    public async Task LimitWarning_NotShownWhenRecordingStopsInTime()
+    {
+        var delay = new ManualDelay();
+        var shown = 0;
+        using var warning = new NpuLimitWarning(() => TimeSpan.FromSeconds(20), () => shown++, delay.WaitAsync);
+
+        warning.OnRecordingStarted();
+        warning.OnRecordingStopped();
+        await delay.ElapseAsync();
+
+        Assert.Equal(0, shown);
+    }
+
+    [Fact]
+    public void LimitWarning_NotTimedWithoutLimit()
+    {
+        var delay = new ManualDelay();
+        using var warning = new NpuLimitWarning(() => null, () => { }, delay.WaitAsync);
+
+        warning.OnRecordingStarted();
+
+        Assert.Null(delay.Requested);
     }
 
     [Fact]
@@ -123,13 +151,13 @@ public class ParakeetOpenVinoPluginTests
     }
 
     [Fact]
-    public async Task LimitReason_UsesHostLanguage()
+    public async Task LimitWarning_UsesHostLanguage()
     {
         var host = new FakeHost(new DictionaryLocalization(ReadLocalization("de")));
         var sut = new ParakeetOpenVinoPlugin();
         await sut.ActivateAsync(host);
 
-        Assert.Equal("NPU-Limit: 20 s pro Aufnahme. Für längeres Diktieren zur GPU wechseln.", sut.MaxRecordingDurationReason);
+        Assert.StartsWith("NPU-Limit erreicht: 20 s pro Aufnahme.", sut.Text.Get("Limit.Warning", 20));
     }
 
     private static Dictionary<string, string> ReadLocalization(string language)
@@ -168,5 +196,29 @@ public class ParakeetOpenVinoPluginTests
         public void SetSetting<T>(string key, T value) { }
         public void Log(PluginLogLevel level, string message) { }
         public void NotifyCapabilitiesChanged() { }
+    }
+
+    /// <summary>Delay that completes only when the test says so, so timing tests do not sleep.</summary>
+    private sealed class ManualDelay
+    {
+        private readonly TaskCompletionSource _elapsed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Task? _pending;
+
+        public TimeSpan? Requested { get; private set; }
+
+        public Task WaitAsync(TimeSpan delay, CancellationToken token)
+        {
+            Requested = delay;
+            _pending = _elapsed.Task.WaitAsync(token);
+            return _pending;
+        }
+
+        public async Task ElapseAsync()
+        {
+            _elapsed.TrySetResult();
+            if (_pending is not null)
+                await Task.WhenAny(_pending, Task.Delay(1000));
+            await Task.Delay(50); // let the continuation run
+        }
     }
 }
