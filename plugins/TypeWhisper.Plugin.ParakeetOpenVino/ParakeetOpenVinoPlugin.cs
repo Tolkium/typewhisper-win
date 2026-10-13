@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Windows;
 using System.Windows.Controls;
 using TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 using TypeWhisper.PluginSDK;
@@ -23,6 +24,12 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     /// <summary>How long Dispose waits for a running transcription or load before leaking the engine.</summary>
     private static readonly TimeSpan DisposeLockTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Stop this much before the NPU window so the audio the host sends still fits: the host appends 0.3 s of
+    /// silence and drains capture for 0.12 s after a stop; the rest covers dispatcher latency.
+    /// </summary>
+    private static readonly TimeSpan LimitStopMargin = TimeSpan.FromSeconds(0.6);
 
     private readonly SemaphoreSlim _engineLock = new(1, 1);
     private IPluginHostServices? _host;
@@ -319,15 +326,16 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     }
 
     /// <summary>
-    /// Times each dictation from the host's recording events so the user is warned when it passes the NPU
-    /// window. Stock TypeWhisper offers plugins no way to stop a recording, so this is a warning only.
+    /// Times each dictation from the host's recording events. When it reaches the NPU window, the plugin stops
+    /// the host's dictation and shows the reason in the host's feedback area (TypeWhisperDictationBridge); if
+    /// the host's internals are not found, it shows its own warning banner instead.
     /// </summary>
     private void SubscribeToRecordingEvents(IPluginHostServices host)
     {
         UnsubscribeFromRecordingEvents();
         _limitWarning = new NpuLimitWarning(
-            () => ActiveAudioLimit,
-            () => NpuLimitPopup.ShowMessage(Text.Get("Limit.Warning", ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds)));
+            () => ActiveAudioLimit - LimitStopMargin,
+            () => Application.Current?.Dispatcher.InvokeAsync(OnNpuLimitReached));
         try
         {
             _eventSubscriptions.Add(host.EventBus.Subscribe<RecordingStartedEvent>(_ =>
@@ -345,6 +353,20 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         {
             Log(PluginLogLevel.Warning, $"Recording events unavailable; no NPU limit warning: {ex.Message}");
         }
+    }
+
+    /// <summary>Runs on the UI thread when a dictation reaches the NPU window.</summary>
+    private void OnNpuLimitReached()
+    {
+        var seconds = ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds;
+        if (TypeWhisperDictationBridge.TryStopWithMessage(Text.Get("Limit.Stopped", seconds)))
+        {
+            Log(PluginLogLevel.Info, $"NPU limit: stopped dictation at {seconds} s");
+            return;
+        }
+
+        Log(PluginLogLevel.Warning, "NPU limit: host dictation controller not found; showing warning banner");
+        NpuLimitPopup.ShowMessage(Text.Get("Limit.Warning", seconds));
     }
 
     private void UnsubscribeFromRecordingEvents()
