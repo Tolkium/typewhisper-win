@@ -124,6 +124,10 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
     private bool _isStoppingRecording;
     private int _pendingJobCount;
     private const int DurationTimerIntervalMilliseconds = 100;
+    private const int RecordingLimitFeedbackMilliseconds = 6000;
+
+    /// <summary>Allowance for the UI dispatcher to start the stop after the timer detects the limit.</summary>
+    private static readonly TimeSpan RecordingLimitDispatcherSlack = TimeSpan.FromMilliseconds(150);
 
     /// <summary>
     /// Audio added after an engine's recording limit is detected: up to one duration-timer tick, the
@@ -134,7 +138,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
         TimeSpan.FromMilliseconds(DurationTimerIntervalMilliseconds)
         + AudioRecordingService.StopDrainDuration
         + TimeSpan.FromSeconds(DictationShortSpeechPolicy.TailPaddingSeconds)
-        + TimeSpan.FromMilliseconds(150);
+        + RecordingLimitDispatcherSlack;
     private const int MaxTrackedApiDictationSessions = 50;
     private const string ExternalLiveTranscriptPluginId = "com.typewhisper.live-transcript";
     private static readonly IReadOnlyList<TimeSpan> TargetAppCorrectionBaselineRetryDelays =
@@ -1077,6 +1081,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
             return null;
         }
 
+        // Very short limits (below twice the margin) stop at half the limit instead of at or below zero.
         var stopAt = max > RecordingLimitStopMargin * 2 ? max - RecordingLimitStopMargin : max / 2;
         var message = reason
             ?? Loc.Instance.GetString("Feedback.RecordingLimitReachedFormat", Math.Round(max.TotalSeconds));
@@ -1092,7 +1097,7 @@ public partial class DictationViewModel : ObservableObject, IDisposable, IDictat
         if (!_isRecording || _isStoppingRecording)
             return;
 
-        ShowTransientFeedback(message, isError: true, autoHideMilliseconds: 6000);
+        ShowTransientFeedback(message, isError: true, autoHideMilliseconds: RecordingLimitFeedbackMilliseconds);
         await StopRecordingOrRecoverAsync();
     }
 

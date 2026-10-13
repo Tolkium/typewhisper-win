@@ -18,7 +18,7 @@ internal static partial class Checks
         foreach (var clip in AllClips)
         {
             var dir = Path.Combine(reference, clip);
-            using var meta = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "meta.json")));
+            using var meta = ReadMeta(reference, clip);
             var root = meta.RootElement;
             var waveform = ReadFloats(Path.Combine(dir, "waveform.bin"));
             var expected = ReadFloats(Path.Combine(dir, "features.bin"));
@@ -62,6 +62,12 @@ internal static partial class Checks
 
         return failed ? 1 : 0;
     }
+
+    /// <summary>Reference data key for a device: CPU compares against the FP32 OpenVINO CPU run.</summary>
+    internal static string ReferenceKey(string device) => device == "CPU" ? "ovcpu" : device.ToLowerInvariant();
+
+    internal static JsonDocument ReadMeta(string reference, string clip) =>
+        JsonDocument.Parse(File.ReadAllText(Path.Combine(reference, clip, "meta.json")));
 
     internal static float[] ReadFloats(string path)
     {

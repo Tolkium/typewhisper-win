@@ -59,6 +59,18 @@ public class ParakeetOpenVinoEngineTests
     }
 
     [Fact]
+    public void FeatureExtractor_FillsFixedWidthNpuWindowAtExactlyTwentySeconds()
+    {
+        var samples = new float[20 * NemoFeatureExtractor.SampleRate]; // 2001 frames, 2000 valid
+        samples[100] = 0.5f;
+
+        var features = new NemoFeatureExtractor().Compute(samples, outputFrames: 2000);
+
+        Assert.Equal(NemoFeatureExtractor.MelBins * 2000, features.Length);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new NemoFeatureExtractor().Compute(samples, outputFrames: 1999));
+    }
+
+    [Fact]
     public void Vocabulary_DecodesSentencePieceSpacing()
     {
         var path = Path.GetTempFileName();

@@ -16,8 +16,13 @@ public static class ParakeetOpenVinoAcceleration
     /// <summary>Known limit: NPU transcribes only the first 20 s of a recording (the fixed NPU encoder window).</summary>
     public const int NpuMaxAudioSeconds = Engine.ParakeetOpenVinoEngine.NpuMaxSeconds;
 
-    public const string NpuLimitDetail =
-        "NPU transcribes only the first 20 s of each recording. Use GPU for longer dictation.";
+    /// <summary>Status detail shown while NPU is selected.</summary>
+    public static readonly string NpuLimitDetail =
+        $"NPU transcribes only the first {NpuMaxAudioSeconds} s of each recording. Use GPU for longer dictation.";
+
+    /// <summary>Short message shown when the host stops dictation at the NPU limit.</summary>
+    public static readonly string NpuLimitReason =
+        $"NPU limit: {NpuMaxAudioSeconds} s per recording. Switch to GPU for longer dictation.";
 
     public sealed record Resolution(
         string TargetDevice,

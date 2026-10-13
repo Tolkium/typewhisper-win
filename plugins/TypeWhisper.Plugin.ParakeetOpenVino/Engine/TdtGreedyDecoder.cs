@@ -9,7 +9,9 @@ namespace TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 internal sealed unsafe class TdtGreedyDecoder : IDisposable
 {
     public const int EncoderChannels = 1024;
-    private const int StateSize = 2 * 1 * 640;
+    private const int StateLayers = 2;
+    private const int StateHidden = 640;
+    private const int StateSize = StateLayers * 1 * StateHidden; // [layers, batch 1, hidden]
     private const int MaxTokensPerStep = 10;
 
     private readonly OvCompiledModel _compiled;
@@ -36,8 +38,8 @@ internal sealed unsafe class TdtGreedyDecoder : IDisposable
             model.Reshape("encoder_outputs", 1, EncoderChannels, 1);
             model.Reshape("targets", 1, 1);
             model.Reshape("target_length", 1);
-            model.Reshape("input_states_1", 2, 1, 640);
-            model.Reshape("input_states_2", 2, 1, 640);
+            model.Reshape("input_states_1", StateLayers, 1, StateHidden);
+            model.Reshape("input_states_2", StateLayers, 1, StateHidden);
             _compiled = core.Compile(model, device, cacheDir);
         }
 

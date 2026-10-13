@@ -18,7 +18,6 @@ internal static unsafe partial class OpenVinoNative
     public enum ElementType
     {
         F32 = 4,
-        I32 = 9,
         I64 = 10,
     }
 
@@ -87,9 +86,6 @@ internal static unsafe partial class OpenVinoNative
 
     // ov_core_compile_model is variadic (key/value string pairs). On win-x64 pointer varargs use
     // the normal calling convention, so fixed-arity overloads are ABI-compatible.
-    [DllImport(Library, EntryPoint = "ov_core_compile_model")]
-    public static extern Status CoreCompileModel(
-        nint core, nint model, [MarshalAs(UnmanagedType.LPUTF8Str)] string device, nuint argCount, nint* compiled);
 
     [DllImport(Library, EntryPoint = "ov_core_compile_model")]
     public static extern Status CoreCompileModel(

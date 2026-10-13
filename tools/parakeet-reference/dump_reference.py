@@ -5,9 +5,13 @@ Runs the same pipeline as the Python sidecar (onnx-asr NumPy preprocessor, Parak
 encoder, TDT greedy decoding) and writes every intermediate result as raw little-endian
 binaries plus a meta.json per clip, so each C# stage can be checked on its own.
 
+The Python sidecar was removed when the plugin moved to the C# engine. Extract it from the last
+Python release first:  git archive parakeet-openvino-v0.5.0 plugins/TypeWhisper.Plugin.ParakeetOpenVino/Scripts | tar -x -C <dir>
+(requires the openvino and onnx-asr packages).
+
 Usage:
     python dump_reference.py --model-dir <PluginData>/com.whispernpu.parakeet-openvino
-                             --scripts <plugin Scripts dir> --out <dir> clip.wav [...]
+                             --scripts <extracted Scripts dir> --out <dir> clip.wav [...]
 """
 
 from __future__ import annotations

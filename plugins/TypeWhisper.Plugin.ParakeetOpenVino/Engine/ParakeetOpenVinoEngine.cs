@@ -14,7 +14,12 @@ internal sealed record ParakeetTranscription(string Text, double AudioSeconds, b
 internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
 {
     public const int NpuMaxSeconds = 20;
-    private const int NpuFrames = NpuMaxSeconds * 100;
+    private const int NpuFrames = NpuMaxSeconds * NemoFeatureExtractor.FramesPerSecond;
+    private const int NpuMaxSamples = NpuMaxSeconds * NemoFeatureExtractor.SampleRate;
+    private const int WarmUpSeconds = 5;
+
+    /// <summary>The per-token decoder runs on CPU: measured faster than GPU for this loop, and NPU cannot run it.</summary>
+    private const string DecoderDevice = "CPU";
     /// <summary>
     /// Shorter buffers (early live-preview polls) decode to garbage and return empty text. Kept below the
     /// host's 0.75 s padding of short final clips so a quick "Yes." is still transcribed.
@@ -27,24 +32,14 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
     private readonly TdtGreedyDecoder _decoder;
     private readonly ParakeetVocabulary _vocabulary;
     private readonly NemoFeatureExtractor _features = new();
-    private readonly int _gpuPadFrames;
 
     /// <param name="weightsDirectory">Folder with encoder-model.onnx(.data), decoder_joint-model.onnx, vocab.txt.</param>
     /// <param name="device">"GPU", "NPU" or "CPU".</param>
     /// <param name="cacheDirectory">OpenVINO compiled-model cache folder, or null for none.</param>
-    /// <param name="decoderDevice">Device for the per-token decoder; null = CPU (measured faster on GPU first calls).</param>
-    /// <param name="gpuPadFrames">Round GPU/CPU encoder input up to a multiple of this many frames
-    /// (0 = no padding) so repeated recording lengths reuse already-prepared GPU kernels.</param>
-    public ParakeetOpenVinoEngine(
-        string weightsDirectory,
-        string device,
-        string? cacheDirectory,
-        string? decoderDevice = null,
-        int gpuPadFrames = 0)
+    public ParakeetOpenVinoEngine(string weightsDirectory, string device, string? cacheDirectory)
     {
         Device = device;
-        _gpuPadFrames = device == "NPU" ? 0 : gpuPadFrames;
-        DecoderDevice = decoderDevice ?? "CPU";
+        IsFixedShape = device == "NPU";
         _core = new OvCore();
         try
         {
@@ -52,7 +47,7 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
 
             using (var model = _core.ReadModel(Path.Combine(weightsDirectory, "encoder-model.onnx")))
             {
-                model.Reshape("audio_signal", 1, NemoFeatureExtractor.MelBins, device == "NPU" ? NpuFrames : -1);
+                model.Reshape("audio_signal", 1, NemoFeatureExtractor.MelBins, IsFixedShape ? NpuFrames : -1);
                 model.Reshape("length", 1);
                 _encoder = _core.Compile(model, device, cacheDirectory);
             }
@@ -70,10 +65,14 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
 
     public string Device { get; }
 
-    public string DecoderDevice { get; }
+    /// <summary>True when the encoder has a fixed input window (NPU); longer audio is cut to it.</summary>
+    private bool IsFixedShape { get; }
+
+    /// <summary>Longest audio transcribed in one call, or null when the encoder accepts any length.</summary>
+    public TimeSpan? MaxAudioDuration => IsFixedShape ? TimeSpan.FromSeconds(NpuMaxSeconds) : null;
 
     /// <summary>Runs a short silent clip so GPU kernels are built before the first dictation.</summary>
-    public void WarmUp() => Transcribe(new float[5 * NemoFeatureExtractor.SampleRate]);
+    public void WarmUp() => Transcribe(new float[WarmUpSeconds * NemoFeatureExtractor.SampleRate]);
 
     public ParakeetTranscription Transcribe(ReadOnlySpan<float> samples)
     {
@@ -82,19 +81,15 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
             return new ParakeetTranscription("", seconds, false);
 
         var truncated = false;
-        if (Device == "NPU" && samples.Length > NpuMaxSeconds * NemoFeatureExtractor.SampleRate)
+        if (IsFixedShape && samples.Length > NpuMaxSamples)
         {
-            samples = samples[..(NpuMaxSeconds * NemoFeatureExtractor.SampleRate)];
+            samples = samples[..NpuMaxSamples];
             truncated = true;
         }
 
-        var features = _features.Compute(samples); // [128, frames]
-        var frames = NemoFeatureExtractor.FrameCount(samples.Length);
+        var inputFrames = IsFixedShape ? NpuFrames : NemoFeatureExtractor.FrameCount(samples.Length);
+        var features = _features.Compute(samples, inputFrames); // [128, inputFrames], zero beyond the audio
         var validFrames = NemoFeatureExtractor.ValidFrameCount(samples.Length);
-
-        var inputFrames = Device == "NPU" ? NpuFrames : PadFrames(frames);
-        if (inputFrames != frames)
-            features = PadTime(features, frames, inputFrames);
 
         var length = new long[] { validFrames };
         fixed (float* f = features)
@@ -114,17 +109,6 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
 
         var tokens = _decoder.Decode(encoder, stride, encodedLength);
         return new ParakeetTranscription(_vocabulary.Decode(tokens), seconds, truncated);
-    }
-
-    private int PadFrames(int frames) =>
-        _gpuPadFrames <= 0 ? frames : (frames + _gpuPadFrames - 1) / _gpuPadFrames * _gpuPadFrames;
-
-    private static float[] PadTime(float[] features, int frames, int targetFrames)
-    {
-        var padded = new float[NemoFeatureExtractor.MelBins * targetFrames];
-        for (var m = 0; m < NemoFeatureExtractor.MelBins; m++)
-            Array.Copy(features, m * frames, padded, m * targetFrames, Math.Min(frames, targetFrames));
-        return padded;
     }
 
     public void Dispose()

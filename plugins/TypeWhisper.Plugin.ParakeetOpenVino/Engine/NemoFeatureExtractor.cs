@@ -5,13 +5,14 @@ namespace TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 
 /// <summary>
 /// NeMo 128-bin log-mel features for Parakeet. Port of onnx-asr 0.11.0
-/// <c>NemoPreprocessorNumpy</c> (MIT licence), the preprocessor the Python sidecar used.
+/// <c>NemoPreprocessorNumpy</c> (MIT licence).
 /// </summary>
 internal sealed class NemoFeatureExtractor
 {
     public const int SampleRate = 16000;
     public const int MelBins = 128;
     public const int HopLength = 160;
+    public const int FramesPerSecond = SampleRate / HopLength;
 
     private const int FftSize = 512;
     private const int WindowLength = 400;
@@ -38,10 +39,16 @@ internal sealed class NemoFeatureExtractor
     /// <summary>Number of valid (non-padding) frames, as passed to the encoder <c>length</c> input.</summary>
     public static int ValidFrameCount(int sampleCount) => sampleCount / HopLength;
 
-    /// <summary>Computes features laid out as [MelBins, frames] (row-major), ready for the encoder.</summary>
-    public float[] Compute(ReadOnlySpan<float> samples)
+    /// <summary>
+    /// Computes features laid out as [MelBins, <paramref name="outputFrames"/>] (row-major), ready for the
+    /// encoder. Columns past the valid frames are zero, so a fixed-shape encoder input is filled directly;
+    /// by default the width is <see cref="FrameCount"/>. The width must hold all valid frames.
+    /// </summary>
+    public float[] Compute(ReadOnlySpan<float> samples, int? outputFrames = null)
     {
         var frames = FrameCount(samples.Length);
+        var columns = outputFrames ?? frames;
+        ArgumentOutOfRangeException.ThrowIfLessThan(columns, ValidFrameCount(samples.Length), nameof(outputFrames));
         var validFrames = ValidFrameCount(samples.Length);
         var padded = PreEmphasizeAndPad(samples);
         var logMel = new float[frames * MelBins]; // [frames, MelBins]
@@ -78,7 +85,7 @@ internal sealed class NemoFeatureExtractor
             }
         }
 
-        return Normalize(logMel, frames, validFrames);
+        return Normalize(logMel, columns, validFrames);
     }
 
     private static float[] PreEmphasizeAndPad(ReadOnlySpan<float> samples)
@@ -95,9 +102,9 @@ internal sealed class NemoFeatureExtractor
     }
 
     /// <summary>Per mel bin: (x - mean) / (std + 1e-5) over valid frames; padding frames become 0.</summary>
-    private static float[] Normalize(float[] logMel, int frames, int validFrames)
+    private static float[] Normalize(float[] logMel, int columns, int validFrames)
     {
-        var features = new float[MelBins * frames]; // [MelBins, frames]
+        var features = new float[MelBins * columns]; // [MelBins, columns]
         if (validFrames == 0)
             return features;
 
@@ -117,7 +124,7 @@ internal sealed class NemoFeatureExtractor
             var variance = (float)(squares / (validFrames - 1)); // NaN for one frame, as in NumPy
             var scale = (float)(Math.Sqrt(variance) + NormalizationEpsilon);
 
-            var row = features.AsSpan(m * frames, frames);
+            var row = features.AsSpan(m * columns, columns);
             for (var f = 0; f < validFrames; f++)
                 row[f] = (logMel[f * MelBins + m] - mean) / scale;
         }

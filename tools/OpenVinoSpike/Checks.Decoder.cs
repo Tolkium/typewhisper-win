@@ -24,7 +24,7 @@ internal static partial class Checks
             foreach (var clip in AllClips)
             {
                 var dir = Path.Combine(reference, clip);
-                using var meta = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "meta.json")));
+                using var meta = ReadMeta(reference, clip);
                 var root = meta.RootElement;
                 if (!root.TryGetProperty($"encoder_{key}", out var encoderMeta))
                     continue;

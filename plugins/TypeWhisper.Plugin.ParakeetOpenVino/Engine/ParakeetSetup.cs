@@ -49,6 +49,8 @@ internal sealed class ParakeetSetup(string dataDirectory)
 
     /// <summary>No bytes for this long counts as a dropped connection; the download is retried and resumed.</summary>
     private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(60);
+    private const int BufferSize = 1 << 20;
+    private const int MaxDownloadAttempts = 4;
 
     private static readonly HttpClient Http = CreateHttpClient();
 
@@ -117,14 +119,15 @@ internal sealed class ParakeetSetup(string dataDirectory)
         string url, string destination, long? expectedSize, string? sha256, Action<long> report, CancellationToken ct)
     {
         var part = destination + ".part";
+        using var hash = sha256 is null ? null : new PartHash();
         for (var attempt = 1; ; attempt++)
         {
             try
             {
-                await DownloadToPartAsync(url, part, report, ct);
+                await DownloadToPartAsync(url, part, hash, report, ct);
                 break;
             }
-            catch (Exception ex) when (attempt < 4 && ex is HttpRequestException or IOException && !ct.IsCancellationRequested)
+            catch (Exception ex) when (attempt < MaxDownloadAttempts && ex is HttpRequestException or IOException && !ct.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromSeconds(2 * attempt), ct); // resume from the .part file
             }
@@ -137,9 +140,12 @@ internal sealed class ParakeetSetup(string dataDirectory)
             throw new InvalidDataException($"{Path.GetFileName(destination)}: got {size} bytes, expected {expected}.");
         }
 
-        if (sha256 is not null)
+        if (hash is not null)
         {
-            var actual = await HashAsync(part, ct);
+            // Hashed while downloading; only a .part left by an earlier session needs a full re-read.
+            if (hash.Bytes != size)
+                await hash.RestartFromFileAsync(part, ct);
+            var actual = Convert.ToHexStringLower(hash.Hash.GetHashAndReset());
             if (!string.Equals(actual, sha256, StringComparison.OrdinalIgnoreCase))
             {
                 File.Delete(part);
@@ -150,7 +156,7 @@ internal sealed class ParakeetSetup(string dataDirectory)
         File.Move(part, destination, overwrite: true);
     }
 
-    private static async Task DownloadToPartAsync(string url, string part, Action<long> report, CancellationToken ct)
+    private static async Task DownloadToPartAsync(string url, string part, PartHash? hash, Action<long> report, CancellationToken ct)
     {
         var existing = File.Exists(part) ? new FileInfo(part).Length : 0;
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -178,10 +184,12 @@ internal sealed class ParakeetSetup(string dataDirectory)
         var append = existing > 0 && response.StatusCode == HttpStatusCode.PartialContent;
         if (!append)
             existing = 0;
+        if (hash is not null && hash.Bytes != existing)
+            await hash.RestartFromFileAsync(append ? part : null, ct);
 
         await using var source = await response.Content.ReadAsStreamAsync(ct);
-        await using var target = new FileStream(part, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
-        var buffer = new byte[1 << 20];
+        await using var target = new FileStream(part, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, useAsync: true);
+        var buffer = new byte[BufferSize];
         var written = existing;
         while (true)
         {
@@ -199,16 +207,43 @@ internal sealed class ParakeetSetup(string dataDirectory)
             if (read == 0)
                 break;
             await target.WriteAsync(buffer.AsMemory(0, read), ct);
+            hash?.Append(buffer.AsSpan(0, read));
             written += read;
             report(written);
         }
     }
 
-    private static async Task<string> HashAsync(string path, CancellationToken ct)
+    /// <summary>SHA-256 of a .part file, updated as bytes are written so the download is not read twice.</summary>
+    private sealed class PartHash : IDisposable
     {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, useAsync: true);
-        var hash = await SHA256.HashDataAsync(stream, ct);
-        return Convert.ToHexStringLower(hash);
+        public IncrementalHash Hash { get; private set; } = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        /// <summary>Number of bytes of the .part file covered by <see cref="Hash"/>.</summary>
+        public long Bytes { get; private set; }
+
+        public void Append(ReadOnlySpan<byte> data)
+        {
+            Hash.AppendData(data);
+            Bytes += data.Length;
+        }
+
+        /// <summary>Starts over, hashing the existing file contents when <paramref name="path"/> is given.</summary>
+        public async Task RestartFromFileAsync(string? path, CancellationToken ct)
+        {
+            Hash.Dispose();
+            Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            Bytes = 0;
+            if (path is null)
+                return;
+
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
+            var buffer = new byte[BufferSize];
+            int read;
+            while ((read = await stream.ReadAsync(buffer, ct)) > 0)
+                Append(buffer.AsSpan(0, read));
+        }
+
+        public void Dispose() => Hash.Dispose();
     }
 
     private static bool FileHasSize(string path, long size) => File.Exists(path) && new FileInfo(path).Length == size;

@@ -5,7 +5,7 @@ using static TypeWhisper.Plugin.ParakeetOpenVino.Engine.OpenVinoNative;
 
 namespace TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 
-/// <summary>Thin owning wrappers over the OpenVINO C handles used by the spike.</summary>
+/// <summary>Loads the OpenVINO C library; owning wrappers for its handles follow in this file.</summary>
 internal static unsafe class OpenVinoLoader
 {
     private static nint _handle;
@@ -151,36 +151,6 @@ internal sealed unsafe class OvInferRequest(nint handle) : IDisposable
     }
 
     public void Infer() => Check(InferRequestInfer(Handle), "ov_infer_request_infer");
-
-    /// <summary>Copies an output tensor to a new array and returns its shape.</summary>
-    public (T[] Data, long[] Shape) GetOutput<T>(string name) where T : unmanaged
-    {
-        nint tensor;
-        Check(InferRequestGetTensor(Handle, name, &tensor), $"ov_infer_request_get_tensor({name})");
-        try
-        {
-            Shape shape;
-            Check(TensorGetShape(tensor, &shape), "ov_tensor_get_shape");
-            var dims = new long[shape.Rank];
-            long count = 1;
-            for (var i = 0; i < shape.Rank; i++)
-            {
-                dims[i] = shape.Dims[i];
-                count *= dims[i];
-            }
-            ShapeFree(&shape);
-
-            void* data;
-            Check(TensorData(tensor, &data), "ov_tensor_data");
-            var result = new T[count];
-            new ReadOnlySpan<T>(data, checked((int)count)).CopyTo(result);
-            return (result, dims);
-        }
-        finally
-        {
-            TensorFree(tensor);
-        }
-    }
 
     /// <summary>Returns the request's own tensor for <paramref name="name"/> (input or output).</summary>
     public OvTensor GetTensor(string name)

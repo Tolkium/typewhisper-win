@@ -21,11 +21,16 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public static readonly IReadOnlyList<string> DeviceOptions = ["GPU", "NPU", "CPU"];
 
+    /// <summary>How long Dispose waits for a running transcription or load before leaking the engine.</summary>
+    private static readonly TimeSpan DisposeLockTimeout = TimeSpan.FromSeconds(5);
+
     private readonly SemaphoreSlim _engineLock = new(1, 1);
     private IPluginHostServices? _host;
     private ParakeetOpenVinoEngine? _engine;
+    private ParakeetSetup? _setup;
+    private bool _setupReady;
+    private bool _logDirectoryCreated;
     private string? _selectedModelId;
-    private string? _loadedModelId;
     private string? _loadedDevice;
     private string _targetDevice = "GPU";
     private string _preferredDevice = "GPU";
@@ -70,17 +75,15 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     public IReadOnlyList<string> SupportedLanguages => [];
 
     /// <summary>
-    /// On NPU the static encoder window holds 20 s of audio. The host stops dictation early enough that
-    /// the audio it sends, including its own tail padding, fits in the window.
-    /// Hosts without this SDK member ignore it; the engine then still cuts audio to 20 s.
+    /// The loaded engine's input window (NPU: 20 s; GPU/CPU: none), or the target device's before a load.
+    /// The host stops dictation early enough that the audio it sends, including its tail padding, fits.
+    /// Hosts without this SDK member ignore it; the engine then still cuts audio to the window.
     /// </summary>
-    public TimeSpan? MaxRecordingDuration =>
-        (_loadedDevice ?? _targetDevice) == "NPU"
-            ? TimeSpan.FromSeconds(ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds)
-            : null;
+    public TimeSpan? MaxRecordingDuration => _engine is { } engine
+        ? engine.MaxAudioDuration
+        : _targetDevice == "NPU" ? TimeSpan.FromSeconds(ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds) : null;
 
-    public string? MaxRecordingDurationReason =>
-        $"NPU limit: {ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds} s per recording. Switch to GPU for longer dictation.";
+    public string? MaxRecordingDurationReason => ParakeetOpenVinoAcceleration.NpuLimitReason;
 
     /// <summary>Device the next model load will use, resolved from host acceleration and <see cref="PreferredDevice"/>.</summary>
     public string TargetDevice => _targetDevice;
@@ -109,13 +112,16 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         "PluginData",
         PluginId);
 
-    private ParakeetSetup Setup => new(DataDirectory);
+    /// <summary>Download/readiness state for <see cref="DataDirectory"/>; reset when the host changes it.</summary>
+    private ParakeetSetup Setup => _setup ??= new ParakeetSetup(DataDirectory);
 
     private string LogFilePath => Path.Combine(DataDirectory, "logs", "parakeet-openvino.log");
 
     public Task ActivateAsync(IPluginHostServices host)
     {
         _host = host;
+        _setup = null; // the data directory now comes from the host
+        _setupReady = false;
         TryLoadPersistedSettings();
         ApplyAccelerationPreference(_accelerationPreference);
         Log(PluginLogLevel.Info, $"Activated plugin v{PluginVersion}; device='{_targetDevice}', data='{DataDirectory}'");
@@ -157,13 +163,15 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         _selectedModelId = modelId;
     }
 
-    public bool IsModelDownloaded(string modelId) => Setup.IsReady;
+    /// <summary>Called often by the host UI; a positive result is cached until the next download or failed load.</summary>
+    public bool IsModelDownloaded(string modelId) => _setupReady || (_setupReady = Setup.IsReady);
 
     public async Task DownloadModelAsync(string modelId, IProgress<double>? progress, CancellationToken ct)
     {
         var watch = Stopwatch.StartNew();
         try
         {
+            _setupReady = false;
             await Setup.EnsureAsync(progress, message => Log(PluginLogLevel.Info, message), ct);
             Log(PluginLogLevel.Info, $"Setup complete in {watch.Elapsed.TotalSeconds:F0}s");
         }
@@ -178,7 +186,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     {
         var watch = Stopwatch.StartNew();
         var setup = Setup;
-        if (!setup.IsReady)
+        _setupReady = setup.IsReady;
+        if (!_setupReady)
             throw new FileNotFoundException("Model or OpenVINO runtime not set up. Download the model first.");
 
         await _engineLock.WaitAsync(ct);
@@ -205,11 +214,10 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
                 return engine;
             }, ct);
 
-            _loadedModelId = modelId;
             _selectedModelId = modelId;
             _loadedDevice = device;
             ApplyAccelerationPreference(_accelerationPreference);
-            Log(PluginLogLevel.Info, $"Parakeet loaded on {device} (decoder {_engine.DecoderDevice}) in {watch.Elapsed.TotalSeconds:F1}s");
+            Log(PluginLogLevel.Info, $"Parakeet loaded on {device} with OpenVINO {OpenVinoLoader.Version()} in {watch.Elapsed.TotalSeconds:F1}s");
         }
         catch (Exception ex)
         {
@@ -237,8 +245,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         try
         {
             var engine = _engine ?? throw new InvalidOperationException("No model loaded. Call LoadModelAsync first.");
-            var samples = WavReader.ReadMono16k(wavAudio);
-            var result = await Task.Run(() => engine.Transcribe(samples), ct);
+            var result = await Task.Run(() => engine.Transcribe(WavReader.ReadMono16k(wavAudio)), ct);
 
             if (result.Truncated)
             {
@@ -300,7 +307,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         // Same race as DeactivateAsync, but synchronous. If a native compile is still running, leak the
         // engine rather than free handles it is using. The semaphore is not disposed (it has no wait
         // handle), so a caller still waiting on it gets "No model loaded" instead of ObjectDisposedException.
-        if (!_engineLock.Wait(TimeSpan.FromSeconds(5)))
+        if (!_engineLock.Wait(DisposeLockTimeout))
             return;
 
         try
@@ -319,7 +326,6 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     {
         _engine?.Dispose();
         _engine = null;
-        _loadedModelId = null;
         _loadedDevice = null;
     }
 
@@ -328,7 +334,11 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         try
         {
             var path = LogFilePath;
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            if (!_logDirectoryCreated)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                _logDirectoryCreated = true;
+            }
             File.AppendAllText(path, $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] [{level}] {message}{Environment.NewLine}", Encoding.UTF8);
         }
         catch

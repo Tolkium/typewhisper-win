@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace TypeWhisper.Plugin.ParakeetOpenVino.Engine;
 
@@ -54,9 +55,11 @@ internal static class WavReader
 
     private static float[] FromInt16(ReadOnlySpan<byte> data)
     {
-        var samples = new float[data.Length / 2];
-        for (var i = 0; i < samples.Length; i++)
-            samples[i] = BinaryPrimitives.ReadInt16LittleEndian(data.Slice(i * 2, 2)) / 32768f;
+        // WAV is little-endian, like every platform this plugin runs on (Windows x64/arm64).
+        var pcm = MemoryMarshal.Cast<byte, short>(data[..(data.Length & ~1)]);
+        var samples = new float[pcm.Length];
+        for (var i = 0; i < pcm.Length; i++)
+            samples[i] = pcm[i] / 32768f;
         return samples;
     }
 
