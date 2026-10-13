@@ -85,7 +85,7 @@ public interface ITranscriptionEnginePlugin : ITypeWhisperPlugin
 
     /// <summary>
     /// User-facing reason shown when the host stops a recording at <see cref="MaxRecordingDuration"/>,
-    /// for example "Intel NPU: 20 s maximum per recording". Null uses a generic host message.
+    /// for example "NPU limit: 20 s per recording". Null uses a generic host message.
     /// </summary>
     string? MaxRecordingDurationReason => null;
 

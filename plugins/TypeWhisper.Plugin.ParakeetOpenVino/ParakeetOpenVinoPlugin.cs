@@ -80,7 +80,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             : null;
 
     public string? MaxRecordingDurationReason =>
-        $"Intel NPU: {ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds} s maximum per recording. Use GPU in the plugin settings for longer dictation.";
+        $"NPU limit: {ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds} s per recording. Switch to GPU for longer dictation.";
 
     /// <summary>Device the next model load will use, resolved from host acceleration and <see cref="PreferredDevice"/>.</summary>
     public string TargetDevice => _targetDevice;
