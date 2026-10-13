@@ -77,8 +77,9 @@ public interface ITranscriptionEnginePlugin : ITypeWhisperPlugin
     void SetAccelerationPreference(TranscriptionAccelerationPreference preference) { }
 
     /// <summary>
-    /// Longest recording the engine can transcribe with its current configuration, or null for no limit.
-    /// When set, the host stops dictation at this length the same way as the stop shortcut.
+    /// Longest audio the engine can transcribe with its current configuration, or null for no limit.
+    /// When set, the host stops dictation the same way as the stop shortcut, early enough that the audio
+    /// it sends (including any padding it adds) fits within this length.
     /// May change when the engine's device changes (for example, a fixed-shape NPU model).
     /// </summary>
     TimeSpan? MaxRecordingDuration => null;

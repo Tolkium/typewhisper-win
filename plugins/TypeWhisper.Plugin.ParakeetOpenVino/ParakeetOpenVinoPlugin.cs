@@ -70,13 +70,13 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     public IReadOnlyList<string> SupportedLanguages => [];
 
     /// <summary>
-    /// On NPU the host stops dictation before the 20 s encoder window is full. Margin: the host appends
-    /// 0.2 s of silence and checks the length every 0.1 s, so 19.7 s keeps all speech inside the window.
+    /// On NPU the static encoder window holds 20 s of audio. The host stops dictation early enough that
+    /// the audio it sends, including its own tail padding, fits in the window.
     /// Hosts without this SDK member ignore it; the engine then still cuts audio to 20 s.
     /// </summary>
     public TimeSpan? MaxRecordingDuration =>
         (_loadedDevice ?? _targetDevice) == "NPU"
-            ? TimeSpan.FromSeconds(ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds - 0.3)
+            ? TimeSpan.FromSeconds(ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds)
             : null;
 
     public string? MaxRecordingDurationReason =>
