@@ -1,9 +1,9 @@
-# Parakeet OpenVINO (Intel GPU)
+# Parakeet OpenVINO (Intel GPU/NPU)
 
-TypeWhisper transcription plugin for **Parakeet TDT 0.6B v3** on **Intel integrated GPUs** (Arc, Iris Xe) via **OpenVINO**, with CPU fallback.
+TypeWhisper transcription plugin for **Parakeet TDT 0.6B v3** on **Intel integrated GPUs** (Arc, Iris Xe) or the **Intel NPU** via **OpenVINO**, with CPU fallback.
 
 - **Plugin id:** `com.whispernpu.parakeet-openvino`
-- **Devices:** Intel GPU (OpenVINO), CPU (onnx-asr INT8)
+- **Devices:** Intel GPU (default), Intel NPU, CPU (onnx-asr INT8)
 
 ## Architecture
 
@@ -15,15 +15,23 @@ TypeWhisper → ParakeetOpenVinoPlugin (.NET)
 
 On GPU the FP32 encoder is compiled with a dynamic time axis, so a recording of any length is encoded in one pass — no chunking or stitching in the host. The decoder runs as a static OpenVINO IR on the same device.
 
+## Known limitation: NPU records at most 20 s
+
+The NPU only runs statically shaped models, so the encoder is compiled for a fixed 20 s window (2000 mel frames at exactly 100 frames/s). In this version the plugin **transcribes only the first 20 s of each recording on NPU** and logs a warning when it cuts. GPU has no limit.
+
+Measured on Lunar Lake: NPU output is identical to GPU for clips up to 20.00 s and loses audio from 20.1 s. TypeWhisper appends 200 ms of silence to Parakeet recordings, so about 19.8 s of speech fits.
+
+Splitting long NPU recordings at sentence boundaries and stitching the text is planned for the next version.
+
 ## TypeWhisper settings integration
 
 | Host setting (Local model acceleration) | Behavior |
 |---|---|
-| **Auto** | Intel GPU |
+| **Auto** | Device chosen in plugin settings (default: Intel GPU) |
 | **CPU** | CPU INT8 |
-| **NVIDIA CUDA / AMD Vulkan / AMD ROCm** | Intel GPU — status explains the remap |
+| **NVIDIA CUDA / AMD Vulkan / AMD ROCm** | Device chosen in plugin settings — status explains the remap |
 
-The plugin settings panel can override the device (GPU / CPU) and set the Python path and OpenVINO cache directory. Reload the model after changing the device.
+The plugin settings panel chooses the Intel device (GPU / NPU / CPU) and set the Python path and OpenVINO cache directory. Reload the model after changing the device.
 
 ## Requirements
 
@@ -31,7 +39,7 @@ The plugin settings panel can override the device (GPU / CPU) and set the Python
 - TypeWhisper ≥ 0.8.4
 - .NET 10 SDK (to build)
 - Python 3.11+ with `openvino` and `onnx-asr` (installed by the plugin on first model download)
-- Up-to-date Intel graphics driver
+- Up-to-date Intel graphics driver (GPU) / Intel NPU driver (NPU)
 
 ## Build and install
 
@@ -45,10 +53,10 @@ The first GPU load compiles kernels (~15–20 s); later loads use the OpenVINO c
 
 ## Measured (Intel Arc 140V, Lunar Lake)
 
-| Audio | CPU INT8 | Intel GPU |
-|---|---|---|
-| 11 s | 0.79 s | 0.09 s |
-| 45 s | 2.00 s | 0.53 s |
+| Audio | CPU INT8 | Intel GPU | Intel NPU |
+|---|---|---|---|
+| 11 s | 0.79 s | 0.09 s | 0.14 s |
+| 45 s | 2.00 s | 0.53 s | first 20 s only |
 
 ## Tests
 

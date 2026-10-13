@@ -29,9 +29,10 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
         {
             Text =
                 "Primary device selection: Engine → Local model acceleration in TypeWhisper.\n" +
-                "• Auto → OpenVINO Intel GPU\n" +
+                "• Auto → device chosen below (default: Intel GPU)\n" +
                 "• CPU → OpenVINO CPU\n" +
-                "• NVIDIA CUDA / AMD Vulkan / ROCm → not supported; the Intel GPU is used instead.",
+                "• NVIDIA CUDA / AMD Vulkan / ROCm → not supported; the device chosen below is used instead.\n" +
+                "NPU transcribes only the first 20 s of each recording; use GPU for longer dictation.",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -45,7 +46,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var advancedLabel = new TextBlock
         {
-            Text = "Advanced override (optional):",
+            Text = "Intel device:",
             Margin = new Thickness(0, 0, 0, 4),
         };
 
@@ -54,7 +55,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
             MinWidth = 200,
             Margin = new Thickness(0, 0, 0, 12),
             ItemsSource = ParakeetOpenVinoPlugin.DeviceOptions,
-            SelectedItem = plugin.TargetDevice,
+            SelectedItem = plugin.PreferredDevice,
         };
         _deviceCombo.SelectionChanged += DeviceCombo_OnSelectionChanged;
 
@@ -117,7 +118,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
             return;
 
         if (_deviceCombo.SelectedItem is string device)
-            _plugin.TargetDevice = device;
+            _plugin.PreferredDevice = device;
     }
 
     private void RefreshFromPlugin()
@@ -129,7 +130,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
             _deviceStatus.Text = string.IsNullOrWhiteSpace(status.Detail)
                 ? status.DisplayText
                 : $"{status.DisplayText}: {status.Detail}";
-            _deviceCombo.SelectedItem = _plugin.TargetDevice;
+            _deviceCombo.SelectedItem = _plugin.PreferredDevice;
             _pythonPathBox.Text = _plugin.PythonExecutablePath;
             _ovCacheBox.Text = _plugin.OpenVinoCacheDirectory;
         }

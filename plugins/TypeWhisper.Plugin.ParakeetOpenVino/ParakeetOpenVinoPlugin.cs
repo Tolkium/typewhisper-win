@@ -11,14 +11,14 @@ using TypeWhisper.PluginSDK.Models;
 namespace TypeWhisper.Plugin.ParakeetOpenVino;
 
 /// <summary>
-/// Parakeet TDT 0.6B v3 on Intel OpenVINO (GPU/CPU) via Python sidecar.
+/// Parakeet TDT 0.6B v3 on Intel OpenVINO (GPU/NPU/CPU) via Python sidecar.
 /// SupportsModelDownload lets TypeWhisper manage setup/download state for the local model.
 /// </summary>
 public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionEnginePlugin
 {
     public const string ModelId = "parakeet-tdt-0.6b-v3-openvino";
 
-    public static readonly IReadOnlyList<string> DeviceOptions = ["GPU", "CPU"];
+    public static readonly IReadOnlyList<string> DeviceOptions = ["GPU", "NPU", "CPU"];
 
     private static readonly string DefaultPythonPath =
         Path.Combine(@"C:\WhisperNPU", "venv", "Scripts", "python.exe");
@@ -41,6 +41,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private string? _loadedDevice;
     private string? _activeBackend;
     private string _targetDevice = "GPU";
+    private string _preferredDevice = "GPU";
     private string _pythonPath = DefaultPythonPath;
     private string _ovCache = DefaultOvCache;
     private int _requestId;
@@ -51,8 +52,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         ParakeetOpenVinoAcceleration.GpuDisplayText);
 
     public string PluginId => "com.whispernpu.parakeet-openvino";
-    public string PluginName => "Parakeet OpenVINO (Intel GPU)";
-    public string PluginVersion => "0.4.0";
+    public string PluginName => "Parakeet OpenVINO (Intel GPU/NPU)";
+    public string PluginVersion => "0.5.0";
 
     public string ProviderId => "parakeet-openvino";
     public string ProviderDisplayName => "Parakeet OpenVINO (lokalne)";
@@ -84,24 +85,23 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public IReadOnlyList<string> SupportedLanguages => [];
 
-    public string TargetDevice
+    /// <summary>Device the next model load will use, resolved from host acceleration and <see cref="PreferredDevice"/>.</summary>
+    public string TargetDevice => _targetDevice;
+
+    /// <summary>Device chosen in plugin settings; used whenever the host acceleration is not CPU.</summary>
+    public string PreferredDevice
     {
-        get => _targetDevice;
+        get => _preferredDevice;
         set
         {
             var normalized = NormalizeDevice(value);
-            if (string.Equals(_targetDevice, normalized, StringComparison.Ordinal))
+            if (string.Equals(_preferredDevice, normalized, StringComparison.Ordinal))
                 return;
 
-            _targetDevice = normalized;
-            TrySetSetting("targetDevice", _targetDevice);
-            _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
-                ParakeetOpenVinoAcceleration.ForDevice(
-                    normalized,
-                    "Manual device override in plugin settings. Engine acceleration may differ until reload."),
-                _loadedDevice,
-                _activeBackend);
-            Log(PluginLogLevel.Info, $"Target device changed to {_targetDevice}; reload model to apply");
+            _preferredDevice = normalized;
+            TrySetSetting("targetDevice", _preferredDevice);
+            ApplyAccelerationPreference(_accelerationPreference);
+            Log(PluginLogLevel.Info, $"Preferred device changed to {_preferredDevice}; reload model to apply");
         }
     }
 
@@ -156,9 +156,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private void ApplyAccelerationPreference(TranscriptionAccelerationPreference preference)
     {
         _accelerationPreference = preference;
-        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference);
+        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference, _preferredDevice);
         _targetDevice = resolution.TargetDevice;
-        TrySetSetting("targetDevice", _targetDevice);
         _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
             resolution,
             _loadedDevice,
@@ -277,7 +276,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             _loadedDevice = loadedDevice;
             _activeBackend = backend;
             _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
-                ParakeetOpenVinoAcceleration.Resolve(_accelerationPreference),
+                ParakeetOpenVinoAcceleration.Resolve(_accelerationPreference, _preferredDevice),
                 _loadedDevice,
                 _activeBackend);
             Log(
@@ -325,6 +324,13 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
             if (response.TryGetProperty("error", out var err))
                 throw new InvalidOperationException($"Transcription failed: {err.GetString()}");
+
+            if (response.TryGetProperty("truncated", out var truncated) && truncated.GetBoolean())
+            {
+                Log(
+                    PluginLogLevel.Warning,
+                    $"NPU limit: only the first {ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds} s were transcribed");
+            }
 
             var text = SanitizeOutput(response.GetProperty("text").GetString() ?? "");
             var duration = response.GetProperty("duration").GetDouble();
@@ -675,7 +681,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
         try
         {
-            _targetDevice = NormalizeDevice(_host.GetSetting<string>("targetDevice") ?? "GPU");
+            _preferredDevice = NormalizeDevice(_host.GetSetting<string>("targetDevice") ?? "GPU");
             _pythonPath = _host.GetSetting<string>("pythonPath") ?? DefaultPythonPath;
             _ovCache = _host.GetSetting<string>("ovCache") ?? DefaultOvCache;
             return;
@@ -694,7 +700,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             using var doc = JsonDocument.Parse(File.ReadAllText(settingsPath));
             var root = doc.RootElement;
             if (root.TryGetProperty("targetDevice", out var device))
-                _targetDevice = NormalizeDevice(device.GetString());
+                _preferredDevice = NormalizeDevice(device.GetString());
             if (root.TryGetProperty("pythonPath", out var python))
                 _pythonPath = python.GetString() ?? DefaultPythonPath;
             if (root.TryGetProperty("ovCache", out var cache))
@@ -744,6 +750,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         device?.ToUpperInvariant() switch
         {
             "CPU" => "CPU",
+            "NPU" => "NPU",
             _ => "GPU",
         };
 

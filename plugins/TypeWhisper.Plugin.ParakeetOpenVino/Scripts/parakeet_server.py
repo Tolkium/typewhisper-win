@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Parakeet TDT 0.6B v3 inference sidecar for TypeWhisper (OpenVINO GPU/CPU).
+"""Parakeet TDT 0.6B v3 inference sidecar for TypeWhisper (OpenVINO NPU/GPU/CPU).
 
 
 
@@ -79,6 +79,14 @@ _configure_stdio_utf8()
 MODEL_ID = "nemo-parakeet-tdt-0.6b-v3"
 
 DEFAULT_CACHE = os.environ.get("OV_CACHE_DIR", "")
+
+# NPU compiles static shapes: one encoder per bucket (seconds of audio).
+NPU_EAGER_BUCKETS_SEC = [5.0]
+NPU_LAZY_BUCKETS_SEC = [20.0]
+# Known v1 limit: NPU transcribes only the first 20 s of a recording -- the largest bucket.
+# Mel features are exactly 100 frames/s, so 20.0 s = 2000 frames fits the bucket with no rounding;
+# measured NPU output identical to GPU up to 20.00 s and degraded from 20.1 s.
+NPU_MAX_AUDIO_SEC = max(NPU_EAGER_BUCKETS_SEC + NPU_LAZY_BUCKETS_SEC)
 
 logging.basicConfig(level=logging.INFO, format="[ParakeetOV] %(message)s")
 
@@ -183,6 +191,18 @@ def _sanitize_text(text: str) -> str:
     return stripped
 
 
+def _truncate_wav(wav_bytes: bytes, max_seconds: float) -> bytes:
+    """Returns a WAV with only the first max_seconds of audio."""
+    with wave.open(io.BytesIO(wav_bytes), "rb") as src:
+        params = src.getparams()
+        frames = src.readframes(int(max_seconds * src.getframerate()))
+    out = io.BytesIO()
+    with wave.open(out, "wb") as dst:
+        dst.setparams(params)
+        dst.writeframes(frames)
+    return out.getvalue()
+
+
 def _validate_wav(wav_bytes: bytes) -> None:
     with wave.open(io.BytesIO(wav_bytes), "rb") as w:
         channels = w.getnchannels()
@@ -216,7 +236,7 @@ def _apply_openvino_shims(model, model_dir: Path, device: str, ov_cache: str | N
 
     from bootstrap_assets import ensure_openvino_assets
 
-    from ov_shims import OpenVinoDecoderShim, OpenVinoEncoderShim
+    from ov_shims import OpenVinoBucketEncoderShim, OpenVinoDecoderShim, OpenVinoEncoderShim
 
 
 
@@ -249,20 +269,25 @@ def _apply_openvino_shims(model, model_dir: Path, device: str, ov_cache: str | N
 
 
     _LOGGER.info("Installing OpenVINO shims on %s (cache=%s)", device, cache)
-
-    model.asr._encoder = OpenVinoEncoderShim(
-
-        onnx_path=str(encoder_onnx),
-
-        device=device,
-
-        cache_dir=cache,
-
-    )
+    if device == "NPU":
+        model.asr._encoder = OpenVinoBucketEncoderShim(
+            onnx_path=str(encoder_onnx),
+            device=device,
+            cache_dir=cache,
+            eager_seconds=NPU_EAGER_BUCKETS_SEC,
+            lazy_seconds=NPU_LAZY_BUCKETS_SEC,
+        )
+    else:
+        model.asr._encoder = OpenVinoEncoderShim(
+            onnx_path=str(encoder_onnx),
+            device=device,
+            cache_dir=cache,
+        )
 
     model.asr._decoder_joint = OpenVinoDecoderShim(
         ir_path=str(decoder_ir),
-        device=device,
+        # NPU decoder is unstable; run the tiny per-token decoder on CPU.
+        device="CPU" if device == "NPU" else device,
         cache_dir=cache,
     )
     return f"openvino-{device.lower()}"
@@ -302,7 +327,7 @@ class ParakeetEngine:
         prog(0.1, "Loading INT8 model...")
         self._model = _load_onnx_model(self.model_dir)
 
-        if self.device == "GPU":
+        if self.device in ("NPU", "GPU"):
 
             prog(0.35, f"Applying OpenVINO shims ({self.device})...")
             self._backend = _apply_openvino_shims(
@@ -312,8 +337,12 @@ class ParakeetEngine:
             )
 
             encoder = self._model.asr._encoder
-            prog(0.55, "Warming up GPU encoder (first run compiles kernels)...")
-            encoder.warm_up()
+            if hasattr(encoder, "warm_all_buckets"):
+                prog(0.55, "Pre-compiling NPU encoder buckets (~1 min first run)...")
+                encoder.warm_all_buckets()
+            else:
+                prog(0.55, "Warming up GPU encoder (first run compiles kernels)...")
+                encoder.warm_up()
             prog(0.95, "Encoder ready")
 
         else:
@@ -323,7 +352,7 @@ class ParakeetEngine:
         prog(1.0, "Model ready")
         return self._backend
 
-    def transcribe(self, wav_bytes: bytes) -> tuple[str, float]:
+    def transcribe(self, wav_bytes: bytes) -> tuple[str, float, bool]:
 
         if self._model is None:
 
@@ -333,9 +362,17 @@ class ParakeetEngine:
 
         duration = wav_duration_sec(wav_bytes)
 
+        truncated = False
+        if self.device == "NPU" and duration > NPU_MAX_AUDIO_SEC:
+            _LOGGER.warning(
+                "NPU limit: transcribing first %.0f s of %.1f s recording", NPU_MAX_AUDIO_SEC, duration
+            )
+            wav_bytes = _truncate_wav(wav_bytes, NPU_MAX_AUDIO_SEC)
+            truncated = True
+
         # Partial live-poll buffers (<1s) often decode to <pad> garbage.
         if duration < 1.0:
-            return ("", duration)
+            return ("", duration, False)
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
 
@@ -349,7 +386,7 @@ class ParakeetEngine:
 
             text = self._model.recognize(tmp_path)
 
-            return (_sanitize_text(str(text).strip()), duration)
+            return (_sanitize_text(str(text).strip()), duration, truncated)
 
         except Exception as exc:
             raise RuntimeError(f"Parakeet recognize failed ({duration:.1f}s audio): {exc}") from exc
@@ -400,7 +437,7 @@ def cmd_check(model_dir: Path) -> None:
 
         devices = ov.Core().available_devices
 
-        if not any(device in devices for device in ("GPU", "CPU")):
+        if not any(device in devices for device in ("NPU", "GPU", "CPU")):
 
             issues.append("No supported OpenVINO device visible")
 
@@ -594,9 +631,9 @@ def cmd_serve(model_dir: Path, default_device: str, ov_cache: str | None) -> Non
 
                 wav_bytes = base64.b64decode(b64)
 
-                text, duration = engine.transcribe(wav_bytes)
+                text, duration, truncated = engine.transcribe(wav_bytes)
 
-                wrap({"text": text, "duration": duration})
+                wrap({"text": text, "duration": duration, "truncated": truncated})
 
             except Exception as exc:
 

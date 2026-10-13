@@ -29,16 +29,18 @@ public class ParakeetOpenVinoPluginTests
     }
 
     [Theory]
-    [InlineData(TranscriptionAccelerationPreference.Auto, "GPU")]
-    [InlineData(TranscriptionAccelerationPreference.Cpu, "CPU")]
-    [InlineData(TranscriptionAccelerationPreference.NvidiaCuda, "GPU")]
-    [InlineData(TranscriptionAccelerationPreference.AmdVulkan, "GPU")]
-    [InlineData(TranscriptionAccelerationPreference.AmdRocm, "GPU")]
-    public void Resolve_MapsHostAccelerationToOpenVinoDevice(
+    [InlineData(TranscriptionAccelerationPreference.Auto, "GPU", "GPU")]
+    [InlineData(TranscriptionAccelerationPreference.Auto, "NPU", "NPU")]
+    [InlineData(TranscriptionAccelerationPreference.Cpu, "NPU", "CPU")]
+    [InlineData(TranscriptionAccelerationPreference.NvidiaCuda, "GPU", "GPU")]
+    [InlineData(TranscriptionAccelerationPreference.AmdVulkan, "NPU", "NPU")]
+    [InlineData(TranscriptionAccelerationPreference.AmdRocm, "GPU", "GPU")]
+    public void Resolve_UsesPreferredDeviceUnlessHostAsksForCpu(
         TranscriptionAccelerationPreference preference,
+        string preferredDevice,
         string expectedDevice)
     {
-        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference);
+        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference, preferredDevice);
         Assert.Equal(expectedDevice, resolution.TargetDevice);
     }
 
@@ -54,19 +56,38 @@ public class ParakeetOpenVinoPluginTests
     }
 
     [Fact]
-    public void DeviceOptions_DoNotOfferNpu()
+    public void PreferredNpu_SurvivesHostAutoPreference()
     {
-        Assert.Equal(["GPU", "CPU"], ParakeetOpenVinoPlugin.DeviceOptions);
+        var sut = new ParakeetOpenVinoPlugin { PreferredDevice = "NPU" };
+        sut.SetAccelerationPreference(TranscriptionAccelerationPreference.Auto);
+
+        Assert.Equal("NPU", sut.TargetDevice);
+        Assert.Equal("NPU", sut.PreferredDevice);
+    }
+
+    [Fact]
+    public void NpuStatus_StatesTwentySecondLimit()
+    {
+        var sut = new ParakeetOpenVinoPlugin { PreferredDevice = "NPU" };
+
+        Assert.Contains("first 20 s", sut.AccelerationStatus.Detail ?? "");
+    }
+
+    [Fact]
+    public void DeviceOptions_OfferGpuNpuAndCpu()
+    {
+        Assert.Equal(["GPU", "NPU", "CPU"], ParakeetOpenVinoPlugin.DeviceOptions);
     }
 
     [Theory]
-    [InlineData("NPU", "GPU")]
+    [InlineData("npu", "NPU")]
     [InlineData("gpu", "GPU")]
     [InlineData("cpu", "CPU")]
-    public void TargetDevice_NormalizesLegacyAndCaseVariants(string input, string expected)
+    [InlineData("unknown", "GPU")]
+    public void PreferredDevice_NormalizesInput(string input, string expected)
     {
-        var sut = new ParakeetOpenVinoPlugin { TargetDevice = input };
-        Assert.Equal(expected, sut.TargetDevice);
+        var sut = new ParakeetOpenVinoPlugin { PreferredDevice = input };
+        Assert.Equal(expected, sut.PreferredDevice);
     }
 
     [Fact]
