@@ -39,6 +39,8 @@
     <ProjectReference Include="..\..\plugins\TypeWhisper.Plugin.GraniteSpeech\TypeWhisper.Plugin.GraniteSpeech.csproj" />
     <ProjectReference Include="..\..\plugins\TypeWhisper.Plugin.LiveTranscript\TypeWhisper.Plugin.LiveTranscript.csproj" />
     <ProjectReference Include="..\..\plugins\TypeWhisper.Plugin.SmallestAi\TypeWhisper.Plugin.SmallestAi.csproj" />
+    <ProjectReference Include="..\..\plugins\TypeWhisper.Plugin.ParakeetIntelOnnx\TypeWhisper.Plugin.ParakeetIntelOnnx.csproj" />
+    <ProjectReference Include="..\..\plugins\TypeWhisper.Plugin.ParakeetOpenVino\TypeWhisper.Plugin.ParakeetOpenVino.csproj" />
     <ProjectReference Include="..\..\src\TypeWhisper.Cli\TypeWhisper.Cli.csproj" />
     <ProjectReference Include="..\..\src\TypeWhisper.PluginSDK\TypeWhisper.PluginSDK.csproj" />
     <ProjectReference Include="..\..\src\TypeWhisper.Windows\TypeWhisper.Windows.csproj" />

@@ -1,0 +1,12 @@
+{
+  "id": "com.tolkium.parakeet-intel-onnx",
+  "name": "Parakeet Intel iGPU (ONNX DirectML)",
+  "version": "1.0.0",
+  "minHostVersion": "0.8.4",
+  "author": "Tolkium",
+  "description": "Local Parakeet TDT 0.6B v3 via ONNX Runtime DirectML on Intel iGPU, with CPU fallback. Respects TypeWhisper spoken language; translation uses host target-language workflow.",
+  "assemblyName": "TypeWhisper.Plugin.ParakeetIntelOnnx.dll",
+  "pluginClass": "TypeWhisper.Plugin.ParakeetIntelOnnx.ParakeetIntelOnnxPlugin",
+  "category": "transcription",
+  "isLocal": true
+}

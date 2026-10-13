@@ -1,0 +1,6 @@
+numpy>=1.26
+soundfile>=0.12
+huggingface_hub>=0.23
+onnxruntime>=1.18
+openvino==2026.2
+onnx-asr>=0.10.0
