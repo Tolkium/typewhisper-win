@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using TypeWhisper.Plugin.ParakeetOpenVino;
+using TypeWhisper.PluginSDK;
 using TypeWhisper.PluginSDK.Models;
 
 namespace TypeWhisper.PluginSystem.Tests;
@@ -40,7 +41,7 @@ public class ParakeetOpenVinoPluginTests
         string preferredDevice,
         string expectedDevice)
     {
-        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference, preferredDevice);
+        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference, preferredDevice, new PluginText(null));
         Assert.Equal(expectedDevice, resolution.TargetDevice);
     }
 
@@ -109,5 +110,63 @@ public class ParakeetOpenVinoPluginTests
             () => sut.TranscribeAsync([], "en", translate: true, prompt: null, CancellationToken.None));
 
         Assert.Contains("target language", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Localization_GermanHasEveryEnglishKey()
+    {
+        var english = ReadLocalization("en");
+        var german = ReadLocalization("de");
+
+        Assert.Empty(english.Keys.Except(german.Keys));
+        Assert.Empty(german.Keys.Except(english.Keys));
+    }
+
+    [Fact]
+    public async Task LimitReason_UsesHostLanguage()
+    {
+        var host = new FakeHost(new DictionaryLocalization(ReadLocalization("de")));
+        var sut = new ParakeetOpenVinoPlugin();
+        await sut.ActivateAsync(host);
+
+        Assert.Equal("NPU-Limit: 20 s pro Aufnahme. Für längeres Diktieren zur GPU wechseln.", sut.MaxRecordingDurationReason);
+    }
+
+    private static Dictionary<string, string> ReadLocalization(string language)
+    {
+        var path = Path.Join(AppContext.BaseDirectory, "Localization", $"{language}.json");
+        if (!File.Exists(path))
+        {
+            path = Path.GetFullPath(Path.Join(
+                AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+                "plugins", "TypeWhisper.Plugin.ParakeetOpenVino", "Localization", $"{language}.json"));
+        }
+
+        return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path))!;
+    }
+
+    private sealed class DictionaryLocalization(Dictionary<string, string> strings) : IPluginLocalization
+    {
+        public string CurrentLanguage => "de";
+        public IReadOnlyList<string> AvailableLanguages => ["de"];
+        public string GetString(string key) => strings.GetValueOrDefault(key, key);
+        public string GetString(string key, params object[] args) => string.Format(GetString(key), args);
+    }
+
+    private sealed class FakeHost(IPluginLocalization localization) : IPluginHostServices
+    {
+        public IPluginLocalization Localization => localization;
+        public string PluginDataDirectory => Path.GetTempPath();
+        public string? ActiveAppProcessName => null;
+        public string? ActiveAppName => null;
+        public IPluginEventBus EventBus => throw new NotSupportedException();
+        public IReadOnlyList<string> AvailableProfileNames => [];
+        public Task StoreSecretAsync(string key, string value) => Task.CompletedTask;
+        public Task<string?> LoadSecretAsync(string key) => Task.FromResult<string?>(null);
+        public Task DeleteSecretAsync(string key) => Task.CompletedTask;
+        public T? GetSetting<T>(string key) => default;
+        public void SetSetting<T>(string key, T value) { }
+        public void Log(PluginLogLevel level, string message) { }
+        public void NotifyCapabilitiesChanged() { }
     }
 }

@@ -22,6 +22,9 @@
     <Content Include="manifest.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Localization\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <!-- Copies the plugin next to the locally built app. Pass -p:InstallPlugin=true to also install
        it into %LOCALAPPDATA%\TypeWhisper\Plugins (the running TypeWhisper's plugin folder). -->
@@ -36,9 +39,14 @@
       <_PluginFiles Include="$(TargetPath);$(ProjectDir)manifest.json" />
       <_PluginFiles Include="$(TargetDir)$(TargetName).deps.json" Condition="Exists('$(TargetDir)$(TargetName).deps.json')" />
     </ItemGroup>
-    <MakeDir Directories="$(PluginOutputDir)" />
+    <ItemGroup>
+      <_LocalizationFiles Include="$(ProjectDir)Localization\*.json" />
+    </ItemGroup>
+    <MakeDir Directories="$(PluginOutputDir)Localization\" />
     <Copy SourceFiles="@(_PluginFiles)" DestinationFolder="$(PluginOutputDir)" />
-    <MakeDir Directories="$(LocalAppPluginDir)" Condition="'$(InstallPluginLocally)' == 'true'" />
+    <Copy SourceFiles="@(_LocalizationFiles)" DestinationFolder="$(PluginOutputDir)Localization\" />
+    <MakeDir Directories="$(LocalAppPluginDir)Localization\" Condition="'$(InstallPluginLocally)' == 'true'" />
     <Copy SourceFiles="@(_PluginFiles)" DestinationFolder="$(LocalAppPluginDir)" Condition="'$(InstallPluginLocally)' == 'true'" />
+    <Copy SourceFiles="@(_LocalizationFiles)" DestinationFolder="$(LocalAppPluginDir)Localization\" Condition="'$(InstallPluginLocally)' == 'true'" />
   </Target>
 </Project>

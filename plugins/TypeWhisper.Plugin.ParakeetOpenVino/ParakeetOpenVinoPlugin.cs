@@ -36,9 +36,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private string _preferredDevice = "GPU";
     private TranscriptionAccelerationPreference _accelerationPreference =
         TranscriptionAccelerationPreference.Auto;
-    private TranscriptionAccelerationStatus _accelerationStatus = new(
-        TranscriptionAccelerationBackend.NvidiaCuda,
-        ParakeetOpenVinoAcceleration.GpuDisplayText);
+    private TranscriptionAccelerationStatus? _accelerationStatus;
+    private PluginText? _text;
 
     public string PluginId => "com.whispernpu.parakeet-openvino";
     public string PluginName => "Parakeet OpenVINO (Intel GPU/NPU)";
@@ -59,7 +58,10 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public TranscriptionAccelerationPreference AccelerationPreference => _accelerationPreference;
 
-    public TranscriptionAccelerationStatus AccelerationStatus => _accelerationStatus;
+    public TranscriptionAccelerationStatus AccelerationStatus => _accelerationStatus ??= ComputeAccelerationStatus();
+
+    /// <summary>User-facing text in the app language (Localization/*.json).</summary>
+    internal PluginText Text => _text ??= new PluginText(_host?.Localization);
 
     public IReadOnlyList<PluginModelInfo> TranscriptionModels { get; } =
     [
@@ -83,7 +85,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         ? engine.MaxAudioDuration
         : _targetDevice == "NPU" ? TimeSpan.FromSeconds(ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds) : null;
 
-    public string? MaxRecordingDurationReason => ParakeetOpenVinoAcceleration.NpuLimitReason;
+    public string? MaxRecordingDurationReason => Text.Get("Limit.Reason", ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds);
 
     /// <summary>Device the next model load will use, resolved from host acceleration and <see cref="PreferredDevice"/>.</summary>
     public string TargetDevice => _targetDevice;
@@ -120,7 +122,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     public Task ActivateAsync(IPluginHostServices host)
     {
         _host = host;
-        _setup = null; // the data directory now comes from the host
+        _setup = null; // the data directory and localization now come from the host
+        _text = null;
         _setupReady = false;
         TryLoadPersistedSettings();
         ApplyAccelerationPreference(_accelerationPreference);
@@ -150,9 +153,8 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
     private void ApplyAccelerationPreference(TranscriptionAccelerationPreference preference)
     {
         _accelerationPreference = preference;
-        var resolution = ParakeetOpenVinoAcceleration.Resolve(preference, _preferredDevice);
-        _targetDevice = resolution.TargetDevice;
-        _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(resolution, _loadedDevice, ActiveBackendText);
+        _targetDevice = ParakeetOpenVinoAcceleration.Resolve(preference, _preferredDevice, Text).TargetDevice;
+        _accelerationStatus = ComputeAccelerationStatus();
         Log(PluginLogLevel.Info, $"Acceleration preference {preference} -> OpenVINO device {_targetDevice}");
     }
 
@@ -188,7 +190,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         var setup = Setup;
         _setupReady = setup.IsReady;
         if (!_setupReady)
-            throw new FileNotFoundException("Model or OpenVINO runtime not set up. Download the model first.");
+            throw new FileNotFoundException(Text.Get("Error.NotSetUp"));
 
         await _engineLock.WaitAsync(ct);
         try
@@ -236,15 +238,13 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         byte[] wavAudio, string? language, bool translate, string? prompt, CancellationToken ct)
     {
         if (translate)
-            throw new NotSupportedException(
-                "Parakeet OpenVINO does not translate during transcription. " +
-                "Set a target language in TypeWhisper to translate after transcription.");
+            throw new NotSupportedException(Text.Get("Error.TranslationNotSupported"));
 
         var watch = Stopwatch.StartNew();
         await _engineLock.WaitAsync(ct);
         try
         {
-            var engine = _engine ?? throw new InvalidOperationException("No model loaded. Call LoadModelAsync first.");
+            var engine = _engine ?? throw new InvalidOperationException(Text.Get("Error.NoModelLoaded"));
             var result = await Task.Run(() => engine.Transcribe(WavReader.ReadMono16k(wavAudio)), ct);
 
             if (result.Truncated)
@@ -320,7 +320,15 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         }
     }
 
-    private string? ActiveBackendText => _loadedDevice is null ? null : $"OpenVINO {ParakeetSetup.OpenVinoVersion}";
+    private string? ActiveBackendText =>
+        _loadedDevice is null ? null : Text.Get("Status.Runtime", ParakeetSetup.OpenVinoVersion);
+
+    private TranscriptionAccelerationStatus ComputeAccelerationStatus() =>
+        ParakeetOpenVinoAcceleration.ToStatus(
+            ParakeetOpenVinoAcceleration.Resolve(_accelerationPreference, _preferredDevice, Text),
+            _loadedDevice,
+            ActiveBackendText,
+            Text);
 
     private void DisposeEngine()
     {

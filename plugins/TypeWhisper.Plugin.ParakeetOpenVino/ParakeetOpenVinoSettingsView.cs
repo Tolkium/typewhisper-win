@@ -13,6 +13,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
     public ParakeetOpenVinoSettingsView(ParakeetOpenVinoPlugin plugin)
     {
         _plugin = plugin;
+        var text = plugin.Text;
         MinWidth = 360;
 
         var title = new TextBlock
@@ -25,12 +26,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var accelerationHint = new TextBlock
         {
-            Text =
-                "Primary device selection: Engine → Local model acceleration in TypeWhisper.\n" +
-                "• Auto → device chosen below (default: Intel GPU)\n" +
-                "• CPU → OpenVINO CPU\n" +
-                "• NVIDIA CUDA / AMD Vulkan / ROCm → not supported; the device chosen below is used instead.\n" +
-                "NPU transcribes only the first 20 s of each recording; use GPU for longer dictation.",
+            Text = text.Get("Settings.AccelerationHint", ParakeetOpenVinoAcceleration.NpuMaxAudioSeconds),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -44,7 +40,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var advancedLabel = new TextBlock
         {
-            Text = "Intel device:",
+            Text = text.Get("Settings.Device"),
             Margin = new Thickness(0, 0, 0, 4),
         };
 
@@ -59,7 +55,7 @@ public sealed class ParakeetOpenVinoSettingsView : UserControl
 
         var storage = new TextBlock
         {
-            Text = $"Model, OpenVINO runtime and logs: {plugin.DataDirectory}",
+            Text = text.Get("Settings.Storage", plugin.DataDirectory),
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.75,
             FontSize = 12,

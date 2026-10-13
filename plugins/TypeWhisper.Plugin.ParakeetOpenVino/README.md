@@ -64,6 +64,8 @@ The GPU's first call at a new recording length includes OpenVINO preparing kerne
 ## Licences
 
 - Plugin: GPL-3.0 (same as TypeWhisper)
+
+User-facing texts live in `Localization/en.json` and `de.json` (same convention as the official plugins); TypeWhisper picks the app language and falls back to English.
 - Feature extraction and decoding are ported from [onnx-asr](https://github.com/istupakov/onnx-asr) (MIT); `Engine/nemo128_fbanks.bin` is its mel filter bank
 - OpenVINO: Apache-2.0
 - Parakeet TDT 0.6B v3 model: CC-BY-4.0 (NVIDIA)
