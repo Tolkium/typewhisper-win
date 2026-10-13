@@ -11,6 +11,8 @@ using static TypeWhisper.Plugin.ParakeetOpenVino.Engine.OpenVinoNative;
 // Modes for later phases: "features <reference>" (phase 2), "decoder <weights> <reference> <ov-libs>" (phase 3).
 if (args.Length > 0 && args[0] == "features")
     return Checks.Features(args[1]);
+if (args.Length > 0 && args[0] == "e2e")
+    return Checks.EndToEnd(args[1], args[2], args[3], args.Length > 5 ? args[5] : null, args[4]);
 if (args.Length > 0 && args[0] == "decoder")
     return Checks.Decoder(args[1], args[2], args[3]);
 
