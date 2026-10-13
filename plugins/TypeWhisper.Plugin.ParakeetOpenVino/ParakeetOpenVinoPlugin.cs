@@ -122,10 +122,18 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         return Task.CompletedTask;
     }
 
-    public Task DeactivateAsync()
+    public async Task DeactivateAsync()
     {
-        DisposeEngine();
-        return Task.CompletedTask;
+        // Wait for any running load/transcription: disposing native handles under it would crash.
+        await _engineLock.WaitAsync();
+        try
+        {
+            DisposeEngine();
+        }
+        finally
+        {
+            _engineLock.Release();
+        }
     }
 
     public UserControl? CreateSettingsView() => new ParakeetOpenVinoSettingsView(this);
@@ -138,7 +146,7 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
         _accelerationPreference = preference;
         var resolution = ParakeetOpenVinoAcceleration.Resolve(preference, _preferredDevice);
         _targetDevice = resolution.TargetDevice;
-        _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(resolution, _loadedDevice, null);
+        _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(resolution, _loadedDevice, ActiveBackendText);
         Log(PluginLogLevel.Info, $"Acceleration preference {preference} -> OpenVINO device {_targetDevice}");
     }
 
@@ -200,16 +208,14 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
             _loadedModelId = modelId;
             _selectedModelId = modelId;
             _loadedDevice = device;
-            _accelerationStatus = ParakeetOpenVinoAcceleration.ToStatus(
-                ParakeetOpenVinoAcceleration.Resolve(_accelerationPreference, _preferredDevice),
-                _loadedDevice,
-                $"OpenVINO {ParakeetSetup.OpenVinoVersion}");
+            ApplyAccelerationPreference(_accelerationPreference);
             Log(PluginLogLevel.Info, $"Parakeet loaded on {device} (decoder {_engine.DecoderDevice}) in {watch.Elapsed.TotalSeconds:F1}s");
         }
         catch (Exception ex)
         {
             Log(PluginLogLevel.Error, $"LoadModelAsync failed after {watch.Elapsed.TotalSeconds:F1}s: {ex}");
             DisposeEngine();
+            ApplyAccelerationPreference(_accelerationPreference); // status must not show the old engine
             throw;
         }
         finally
@@ -291,9 +297,23 @@ public sealed class ParakeetOpenVinoPlugin : ITypeWhisperPlugin, ITranscriptionE
 
     public void Dispose()
     {
-        DisposeEngine();
-        _engineLock.Dispose();
+        // Same race as DeactivateAsync, but synchronous. If a native compile is still running, leak the
+        // engine rather than free handles it is using. The semaphore is not disposed (it has no wait
+        // handle), so a caller still waiting on it gets "No model loaded" instead of ObjectDisposedException.
+        if (!_engineLock.Wait(TimeSpan.FromSeconds(5)))
+            return;
+
+        try
+        {
+            DisposeEngine();
+        }
+        finally
+        {
+            _engineLock.Release();
+        }
     }
+
+    private string? ActiveBackendText => _loadedDevice is null ? null : $"OpenVINO {ParakeetSetup.OpenVinoVersion}";
 
     private void DisposeEngine()
     {

@@ -20,13 +20,15 @@ internal sealed class NemoFeatureExtractor
     private const float LogZeroGuard = 1f / (1 << 24);
     private const double NormalizationEpsilon = 1e-5;
 
-    private readonly float[] _melFilters; // [SpectrumBins, MelBins]
+    private readonly float[] _melFilters; // [MelBins, SpectrumBins]: one contiguous row per mel bin
+    private readonly int[] _melStart;     // per mel bin: first spectrum bin with a nonzero weight
+    private readonly int[] _melEnd;       // per mel bin: one past the last nonzero weight
     private readonly double[] _window;    // [FftSize]
     private readonly Fft _fft = new(FftSize);
 
     public NemoFeatureExtractor()
     {
-        _melFilters = LoadMelFilters();
+        (_melFilters, _melStart, _melEnd) = LoadMelFilters();
         _window = CreateWindow();
     }
 
@@ -67,9 +69,11 @@ internal sealed class NemoFeatureExtractor
             var row = logMel.AsSpan(f * MelBins, MelBins);
             for (var m = 0; m < MelBins; m++)
             {
+                // Triangular filters: summing only the nonzero span skips exact zeros, same result.
+                var filter = _melFilters.AsSpan(m * SpectrumBins, SpectrumBins);
                 float sum = 0;
-                for (var k = 0; k < SpectrumBins; k++)
-                    sum += power[k] * _melFilters[k * MelBins + m];
+                for (var k = _melStart[m]; k < _melEnd[m]; k++)
+                    sum += power[k] * filter[k];
                 row[m] = MathF.Log(sum + LogZeroGuard);
             }
         }
@@ -131,15 +135,34 @@ internal sealed class NemoFeatureExtractor
         return window;
     }
 
-    private static float[] LoadMelFilters()
+    /// <summary>Loads the [SpectrumBins, MelBins] filter bank, transposed, with each bin's nonzero span.</summary>
+    private static (float[] Filters, int[] Start, int[] End) LoadMelFilters()
     {
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("nemo128_fbanks.bin")
             ?? throw new InvalidOperationException("Embedded resource nemo128_fbanks.bin is missing.");
         var bytes = new byte[SpectrumBins * MelBins * sizeof(float)];
         stream.ReadExactly(bytes);
-        var filters = new float[SpectrumBins * MelBins];
-        Buffer.BlockCopy(bytes, 0, filters, 0, bytes.Length);
-        return filters;
+        var stored = new float[SpectrumBins * MelBins];
+        Buffer.BlockCopy(bytes, 0, stored, 0, bytes.Length);
+
+        var filters = new float[MelBins * SpectrumBins];
+        var start = new int[MelBins];
+        var end = new int[MelBins];
+        for (var m = 0; m < MelBins; m++)
+        {
+            start[m] = SpectrumBins;
+            for (var k = 0; k < SpectrumBins; k++)
+            {
+                var weight = stored[k * MelBins + m];
+                filters[m * SpectrumBins + k] = weight;
+                if (weight != 0)
+                {
+                    start[m] = Math.Min(start[m], k);
+                    end[m] = k + 1;
+                }
+            }
+        }
+        return (filters, start, end);
     }
 
     /// <summary>In-place iterative radix-2 complex FFT.</summary>

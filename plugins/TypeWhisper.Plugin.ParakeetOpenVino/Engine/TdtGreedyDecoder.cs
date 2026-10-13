@@ -19,6 +19,9 @@ internal sealed unsafe class TdtGreedyDecoder : IDisposable
     private readonly OvTensor _targetLengthInput;
     private readonly OvTensor _state1Input;
     private readonly OvTensor _state2Input;
+    private readonly OvTensor _logitsOutput;
+    private readonly OvTensor _state1Output;
+    private readonly OvTensor _state2Output;
     private readonly int _vocabSize;
     private readonly int _blankId;
     private readonly int _outputSize;
@@ -38,18 +41,29 @@ internal sealed unsafe class TdtGreedyDecoder : IDisposable
             _compiled = core.Compile(model, device, cacheDir);
         }
 
-        _request = _compiled.CreateInferRequest();
-        _encoderInput = _request.GetTensor("encoder_outputs");
-        _targetsInput = _request.GetTensor("targets");
-        _targetLengthInput = _request.GetTensor("target_length");
-        _state1Input = _request.GetTensor("input_states_1");
-        _state2Input = _request.GetTensor("input_states_2");
-        _targetLengthInput.Data<int>()[0] = 1;
+        try
+        {
+            _request = _compiled.CreateInferRequest();
+            _encoderInput = _request.GetTensor("encoder_outputs");
+            _targetsInput = _request.GetTensor("targets");
+            _targetLengthInput = _request.GetTensor("target_length");
+            _state1Input = _request.GetTensor("input_states_1");
+            _state2Input = _request.GetTensor("input_states_2");
+            _targetLengthInput.Data<int>()[0] = 1;
 
-        using var outputs = _request.GetTensor("outputs");
-        _outputSize = (int)outputs.Shape()[^1];
-        if (_outputSize <= _vocabSize)
-            throw new InvalidOperationException($"Joint output {_outputSize} has no duration logits (vocab {_vocabSize}).");
+            // Static shapes: the request keeps these output tensors for its lifetime, like the inputs.
+            _logitsOutput = _request.GetTensor("outputs");
+            _state1Output = _request.GetTensor("output_states_1");
+            _state2Output = _request.GetTensor("output_states_2");
+            _outputSize = (int)_logitsOutput.Shape()[^1];
+            if (_outputSize <= _vocabSize)
+                throw new InvalidOperationException($"Joint output {_outputSize} has no duration logits (vocab {_vocabSize}).");
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -74,19 +88,15 @@ internal sealed unsafe class TdtGreedyDecoder : IDisposable
 
             _request.Infer();
 
-            int token, step;
-            using (var output = _request.GetTensor("outputs"))
-            {
-                var logits = output.Data<float>();
-                token = ArgMax(logits, 0, _vocabSize);
-                step = ArgMax(logits, _vocabSize, _outputSize);
-            }
+            var logits = _logitsOutput.Data<float>();
+            var token = ArgMax(logits, 0, _vocabSize);
+            var step = ArgMax(logits, _vocabSize, _outputSize);
 
             if (token != _blankId)
             {
                 // The state only advances when a token is emitted.
-                CopyOutputState("output_states_1", _state1Input);
-                CopyOutputState("output_states_2", _state2Input);
+                CopyState(_state1Output, _state1Input);
+                CopyState(_state2Output, _state2Input);
                 tokens.Add(token);
                 emitted++;
             }
@@ -106,9 +116,8 @@ internal sealed unsafe class TdtGreedyDecoder : IDisposable
         return tokens;
     }
 
-    private void CopyOutputState(string name, OvTensor destination)
+    private static void CopyState(OvTensor source, OvTensor destination)
     {
-        using var source = _request.GetTensor(name);
         new ReadOnlySpan<float>(source.Data<float>(), StateSize)
             .CopyTo(new Span<float>(destination.Data<float>(), StateSize));
     }
@@ -127,12 +136,16 @@ internal sealed unsafe class TdtGreedyDecoder : IDisposable
 
     public void Dispose()
     {
-        _encoderInput.Dispose();
-        _targetsInput.Dispose();
-        _targetLengthInput.Dispose();
-        _state1Input.Dispose();
-        _state2Input.Dispose();
-        _request.Dispose();
-        _compiled.Dispose();
+        // Null-tolerant: also called from the constructor after a partial failure.
+        _encoderInput?.Dispose();
+        _targetsInput?.Dispose();
+        _targetLengthInput?.Dispose();
+        _state1Input?.Dispose();
+        _state2Input?.Dispose();
+        _logitsOutput?.Dispose();
+        _state1Output?.Dispose();
+        _state2Output?.Dispose();
+        _request?.Dispose();
+        _compiled?.Dispose();
     }
 }

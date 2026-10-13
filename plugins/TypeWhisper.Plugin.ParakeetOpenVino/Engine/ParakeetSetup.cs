@@ -47,6 +47,9 @@ internal sealed class ParakeetSetup(string dataDirectory)
         "tbb12.dll", "tbbbind_2_5.dll", "tbbmalloc.dll",
     ];
 
+    /// <summary>No bytes for this long counts as a dropped connection; the download is retried and resumed.</summary>
+    private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(60);
+
     private static readonly HttpClient Http = CreateHttpClient();
 
     public string WeightsDirectory => Path.Combine(dataDirectory, "weights");
@@ -154,7 +157,20 @@ internal sealed class ParakeetSetup(string dataDirectory)
         if (existing > 0)
             request.Headers.Range = new RangeHeaderValue(existing, null);
 
-        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        // HttpClient.Timeout is infinite (multi-GB files), so a silent connection would hang forever.
+        using var stall = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        stall.CancelAfter(StallTimeout);
+        HttpResponseMessage response;
+        try
+        {
+            response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, stall.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new IOException($"No response from {request.RequestUri?.Host} for {StallTimeout.TotalSeconds:F0} s.");
+        }
+
+        using var _ = response;
         if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
             return; // already complete
         response.EnsureSuccessStatusCode();
@@ -167,9 +183,21 @@ internal sealed class ParakeetSetup(string dataDirectory)
         await using var target = new FileStream(part, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
         var buffer = new byte[1 << 20];
         var written = existing;
-        int read;
-        while ((read = await source.ReadAsync(buffer, ct)) > 0)
+        while (true)
         {
+            stall.CancelAfter(StallTimeout);
+            int read;
+            try
+            {
+                read = await source.ReadAsync(buffer, stall.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new IOException($"Download stalled for {StallTimeout.TotalSeconds:F0} s.");
+            }
+
+            if (read == 0)
+                break;
             await target.WriteAsync(buffer.AsMemory(0, read), ct);
             written += read;
             report(written);

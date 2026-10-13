@@ -26,7 +26,7 @@ Downloading the model in TypeWhisper fetches, into the plugin data folder:
 | Parakeet ONNX model | Hugging Face `istupakov/parakeet-tdt-0.6b-v3-onnx`, pinned revision | ~2.6 GB |
 | OpenVINO 2026.2.0 runtime DLLs | Intel's official `openvino` wheel on PyPI (only `openvino/libs/*.dll` is kept) | 73 MB download, 194 MB on disk |
 
-Downloads resume after interruptions and are checked by size and SHA-256. Compiled models are cached in `ovcache/`; the first NPU load compiles for about a minute.
+Downloads resume after interruptions. The OpenVINO wheel and the model weights are checked by SHA-256; the small `config.json` and `vocab.txt` only by size. Compiled models are cached in `ovcache/`; the first NPU load compiles for about a minute.
 
 ## Known limitation: NPU records at most 20 s
 

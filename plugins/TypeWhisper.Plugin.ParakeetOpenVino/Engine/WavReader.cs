@@ -16,10 +16,13 @@ internal static class WavReader
         while (offset + 8 <= wav.Length)
         {
             var id = wav.Slice(offset, 4);
-            var size = (int)BinaryPrimitives.ReadUInt32LittleEndian(wav.Slice(offset + 4, 4));
+            var size = BinaryPrimitives.ReadUInt32LittleEndian(wav.Slice(offset + 4, 4));
             var body = offset + 8;
+            var available = wav.Length - body;
             if (id.SequenceEqual("fmt "u8))
             {
+                if (size < 16 || available < 16)
+                    throw new InvalidDataException("WAV fmt chunk is truncated.");
                 format = BinaryPrimitives.ReadUInt16LittleEndian(wav.Slice(body, 2));
                 channels = BinaryPrimitives.ReadUInt16LittleEndian(wav.Slice(body + 2, 2));
                 sampleRate = BinaryPrimitives.ReadInt32LittleEndian(wav.Slice(body + 4, 4));
@@ -30,7 +33,8 @@ internal static class WavReader
                 if (channels != 1 || sampleRate != NemoFeatureExtractor.SampleRate)
                     throw new InvalidDataException($"Expected 16 kHz mono WAV, got {sampleRate} Hz, {channels} channels.");
 
-                var data = wav.Slice(body, Math.Min(size, wav.Length - body));
+                // Streaming writers may leave the size as 0xFFFFFFFF; read what is there.
+                var data = wav.Slice(body, (int)Math.Min(size, (uint)available));
                 return (format, bits) switch
                 {
                     (1, 16) => FromInt16(data),
@@ -39,7 +43,10 @@ internal static class WavReader
                 };
             }
 
-            offset = body + size + (size & 1);
+            var next = (long)body + size + (size & 1);
+            if (next > wav.Length)
+                break;
+            offset = (int)next;
         }
 
         throw new InvalidDataException("WAV has no data chunk.");

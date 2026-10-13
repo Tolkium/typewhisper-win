@@ -36,7 +36,7 @@ internal static partial class Checks
                 using var meta = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "meta.json")));
                 var root = meta.RootElement;
                 var waveform = ReadFloats(Path.Combine(dir, "waveform.bin"));
-                var expected = waveform.Length < 16000 ? "" : root.GetProperty($"text_{key}").GetString() ?? "";
+                var expected = waveform.Length < 8000 ? "" : root.GetProperty($"text_{key}").GetString() ?? "";
 
                 watch.Restart();
                 var result = engine.Transcribe(waveform);

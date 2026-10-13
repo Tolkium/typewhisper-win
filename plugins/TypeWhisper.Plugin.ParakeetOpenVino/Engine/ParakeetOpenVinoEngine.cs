@@ -15,7 +15,11 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
 {
     public const int NpuMaxSeconds = 20;
     private const int NpuFrames = NpuMaxSeconds * 100;
-    private const float MinimumSeconds = 1.0f;
+    /// <summary>
+    /// Shorter buffers (early live-preview polls) decode to garbage and return empty text. Kept below the
+    /// host's 0.75 s padding of short final clips so a quick "Yes." is still transcribed.
+    /// </summary>
+    private const float MinimumSeconds = 0.5f;
 
     private readonly OvCore _core;
     private readonly OvCompiledModel _encoder;
@@ -40,20 +44,28 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
     {
         Device = device;
         _gpuPadFrames = device == "NPU" ? 0 : gpuPadFrames;
-        _core = new OvCore();
-        _vocabulary = new ParakeetVocabulary(Path.Combine(weightsDirectory, "vocab.txt"));
-
-        using (var model = _core.ReadModel(Path.Combine(weightsDirectory, "encoder-model.onnx")))
-        {
-            model.Reshape("audio_signal", 1, NemoFeatureExtractor.MelBins, device == "NPU" ? NpuFrames : -1);
-            model.Reshape("length", 1);
-            _encoder = _core.Compile(model, device, cacheDirectory);
-        }
-        _encoderRequest = _encoder.CreateInferRequest();
-
         DecoderDevice = decoderDevice ?? "CPU";
-        _decoder = new TdtGreedyDecoder(
-            _core, Path.Combine(weightsDirectory, "decoder_joint-model.onnx"), DecoderDevice, cacheDirectory, _vocabulary);
+        _core = new OvCore();
+        try
+        {
+            _vocabulary = new ParakeetVocabulary(Path.Combine(weightsDirectory, "vocab.txt"));
+
+            using (var model = _core.ReadModel(Path.Combine(weightsDirectory, "encoder-model.onnx")))
+            {
+                model.Reshape("audio_signal", 1, NemoFeatureExtractor.MelBins, device == "NPU" ? NpuFrames : -1);
+                model.Reshape("length", 1);
+                _encoder = _core.Compile(model, device, cacheDirectory);
+            }
+            _encoderRequest = _encoder.CreateInferRequest();
+
+            _decoder = new TdtGreedyDecoder(
+                _core, Path.Combine(weightsDirectory, "decoder_joint-model.onnx"), DecoderDevice, cacheDirectory, _vocabulary);
+        }
+        catch
+        {
+            Dispose(); // free the native handles created so far (the compiled encoder holds GPU memory)
+            throw;
+        }
     }
 
     public string Device { get; }
@@ -67,7 +79,7 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
     {
         var seconds = samples.Length / (double)NemoFeatureExtractor.SampleRate;
         if (seconds < MinimumSeconds)
-            return new ParakeetTranscription("", seconds, false); // short live-poll buffers decode to garbage
+            return new ParakeetTranscription("", seconds, false);
 
         var truncated = false;
         if (Device == "NPU" && samples.Length > NpuMaxSeconds * NemoFeatureExtractor.SampleRate)
@@ -117,9 +129,10 @@ internal sealed unsafe class ParakeetOpenVinoEngine : IDisposable
 
     public void Dispose()
     {
-        _decoder.Dispose();
-        _encoderRequest.Dispose();
-        _encoder.Dispose();
-        _core.Dispose();
+        // Null-tolerant: also called from the constructor after a partial failure.
+        _decoder?.Dispose();
+        _encoderRequest?.Dispose();
+        _encoder?.Dispose();
+        _core?.Dispose();
     }
 }
