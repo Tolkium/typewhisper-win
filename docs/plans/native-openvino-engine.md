@@ -217,3 +217,4 @@ Gate: fresh Windows user, install plugin → download → dictate, on GPU and NP
 | Date | Phase | Result |
 |---|---|---|
 | 2026-10-13 | Research | OpenVINO cannot import `nemo128.onnx` (STFT) → C# preprocessor required |
+| 2026-10-13 | 0 | Pass. 9 clips × OVCPU/CPU/GPU/NPU in `C:\WhisperNPU\parakeet-reference`. FP32 OpenVINO text identical on OVCPU, GPU, NPU (NPU 45 s = first 20 s). Current INT8 CPU path differs: hallucinates "Thank you." on silence, more errors on Slovak → C# CPU path should use FP32. |
